@@ -68,7 +68,10 @@ from collections import defaultdict
 import statistics
 
 from bs4 import BeautifulSoup
-from mcp.server.fastmcp import FastMCP
+try:
+    from fastmcp import FastMCP
+except ImportError:
+    from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 # =============================================================================
@@ -99,16 +102,17 @@ except ImportError:
 
 
 # =============================================================================
-# Konfiguration
+# Konfiguration - Läser från miljövariabler med fallback
 # =============================================================================
 
-CLIENT_ID = "UIiATHgXGSP6HIyOlqWZkX51dnka"
-CLIENT_SECRET = "H10hBNr_KeYqA9h5AEe7J32HkFsa"
-TOKEN_URL = "https://portal.api.bolagsverket.se/oauth2/token"
-BASE_URL = "https://gw.api.bolagsverket.se/vardefulla-datamangder/v1"
+CLIENT_ID = os.environ.get("BOLAGSVERKET_CLIENT_ID", "UIiATHgXGSP6HIyOlqWZkX51dnka")
+CLIENT_SECRET = os.environ.get("BOLAGSVERKET_CLIENT_SECRET", "H10hBNr_KeYqA9h5AEe7J32HkFsa")
+TOKEN_URL = os.environ.get("BOLAGSVERKET_TOKEN_URL", "https://portal.api.bolagsverket.se/oauth2/token")
+BASE_URL = os.environ.get("BOLAGSVERKET_BASE_URL", "https://gw.api.bolagsverket.se/vardefulla-datamangder/v1")
 SCOPE = "vardefulla-datamangder:read vardefulla-datamangder:ping"
 
-OUTPUT_DIR = Path.home() / "Downloads" / "bolagsverket"
+# Output-katalog: använd /tmp på server, Downloads lokalt
+OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/tmp/bolagsverket" if os.environ.get("RENDER") else str(Path.home() / "Downloads" / "bolagsverket")))
 
 
 # =============================================================================
@@ -5183,32 +5187,29 @@ def main():
     Kör MCP-servern med vald transport.
 
     Användning:
-        python bolagsverket_mcp_v5.py           # stdio (Claude Desktop)
-        python bolagsverket_mcp_v5.py --http    # HTTP/SSE (remote clients)
-        python bolagsverket_mcp_v5.py --http --port 8080
+        python bolagsverket_mcp_server.py           # stdio (Claude Desktop)
+        python bolagsverket_mcp_server.py --http    # HTTP/SSE (remote clients)
+        python bolagsverket_mcp_server.py --http --port 8080
     
-    Nyheter i v5.0.1:
-        - Fixat: sign-attribut hanteras korrekt för negativa värden
-        - Fixat: format-attribut hanteras korrekt för olika nummerformat
-    
-    Nyheter i v5.0:
-        - Pydantic field_validator för robust organisationsnummer-validering
-        - Utökade Resources med fler URI-endpoints
-        - Nya Prompts för vanliga arbetsflöden
+    Miljövariabler:
+        PORT                      - Port för HTTP-server (Render sätter denna)
+        RENDER                    - Sätts automatiskt av Render
+        BOLAGSVERKET_CLIENT_ID    - API Client ID
+        BOLAGSVERKET_CLIENT_SECRET - API Client Secret
     """
     import argparse
 
-    parser = argparse.ArgumentParser(description="Bolagsverket MCP Server v5.0.1")
+    parser = argparse.ArgumentParser(description="Bolagsverket MCP Server v5.1.0")
     parser.add_argument(
         "--http",
         action="store_true",
-        help="Kör med HTTP/SSE transport (för remote clients: ChatGPT, Gemini, etc.)"
+        help="Kör med HTTP/SSE transport (för remote clients)"
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="Port för HTTP-server (default: 8000)"
+        default=None,
+        help="Port för HTTP-server (default: $PORT eller 8000)"
     )
     parser.add_argument(
         "--host",
@@ -5218,12 +5219,15 @@ def main():
     )
 
     args = parser.parse_args()
+    
+    # Render sätter PORT miljövariabel
+    port = args.port or int(os.environ.get("PORT", 8000))
 
-    if args.http:
-        logger.info(f"Startar Bolagsverket MCP Server v5.0.1 (HTTP) på {args.host}:{args.port}...")
-        mcp.run(transport="sse", host=args.host, port=args.port)
+    if args.http or os.environ.get("RENDER"):
+        logger.info(f"Startar Bolagsverket MCP Server v5.1.0 (HTTP/SSE) på {args.host}:{port}...")
+        mcp.run(transport="sse", host=args.host, port=port)
     else:
-        logger.info("Startar Bolagsverket MCP Server v5.0.1 (stdio)...")
+        logger.info("Startar Bolagsverket MCP Server v5.1.0 (stdio)...")
         mcp.run(transport="stdio")
 
 
