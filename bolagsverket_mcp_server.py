@@ -68,10 +68,7 @@ from collections import defaultdict
 import statistics
 
 from bs4 import BeautifulSoup
-try:
-    from fastmcp import FastMCP
-except ImportError:
-    from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 # =============================================================================
@@ -5225,7 +5222,7 @@ def main():
 
     if args.http or os.environ.get("RENDER"):
         logger.info(f"Startar Bolagsverket MCP Server v5.1.0 (HTTP/SSE) på {args.host}:{port}...")
-        mcp.run(transport="sse", host=args.host, port=port)
+        mcp.run(transport="sse", host=args.host, port=port)  # SSE för Claude.ai kompatibilitet
     else:
         logger.info("Startar Bolagsverket MCP Server v5.1.0 (stdio)...")
         mcp.run(transport="stdio")
