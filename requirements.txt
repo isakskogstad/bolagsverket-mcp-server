@@ -1,5 +1,5 @@
 # FastMCP 2.x - pinnad version för stabilitet
-fastmcp==2.3.2
+fastmcp==2.13.0
 pydantic>=2.0.0
 httpx>=0.25.0
 beautifulsoup4>=4.12.0
