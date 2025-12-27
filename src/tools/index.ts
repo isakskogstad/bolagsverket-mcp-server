@@ -36,6 +36,27 @@ const TrendZod = z.object({
 });
 
 /**
+ * Hjälpfunktion för att skapa MCP tool response.
+ * Kontrollerar om resultatet är ett fel och sätter isError-flaggan korrekt.
+ */
+function createToolResponse(result: string): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } {
+  // Kontrollera om resultatet är ett felmeddelande (JSON med isError: true)
+  try {
+    const parsed = JSON.parse(result);
+    if (parsed && typeof parsed === 'object' && parsed.isError === true) {
+      return {
+        content: [{ type: 'text' as const, text: result }],
+        isError: true,
+      };
+    }
+  } catch {
+    // Inte JSON, fortsätt som vanligt
+  }
+
+  return { content: [{ type: 'text' as const, text: result }] };
+}
+
+/**
  * Registrera alla verktyg på servern.
  */
 export function registerTools(server: McpServer): void {
@@ -46,7 +67,7 @@ export function registerTools(server: McpServer): void {
     FullAnalysZod.shape,
     async (args) => {
       const result = await analyzeFull.analyzeFull(args);
-      return { content: [{ type: 'text' as const, text: result }] };
+      return createToolResponse(result);
     }
   );
 
@@ -57,7 +78,7 @@ export function registerTools(server: McpServer): void {
     OrgNummerZod.shape,
     async (args) => {
       const result = await basicInfo.getBasicInfo(args);
-      return { content: [{ type: 'text' as const, text: result }] };
+      return createToolResponse(result);
     }
   );
 
@@ -68,7 +89,7 @@ export function registerTools(server: McpServer): void {
     OrgNummerZod.shape,
     async (args) => {
       const result = await basicInfo.getAddress(args);
-      return { content: [{ type: 'text' as const, text: result }] };
+      return createToolResponse(result);
     }
   );
 
@@ -79,7 +100,7 @@ export function registerTools(server: McpServer): void {
     OrgNummerZod.shape,
     async (args) => {
       const result = await basicInfo.getVerksamhet(args);
-      return { content: [{ type: 'text' as const, text: result }] };
+      return createToolResponse(result);
     }
   );
 
@@ -90,7 +111,7 @@ export function registerTools(server: McpServer): void {
     OrgNummerZod.shape,
     async (args) => {
       const result = await basicInfo.getCompanyStatus(args);
-      return { content: [{ type: 'text' as const, text: result }] };
+      return createToolResponse(result);
     }
   );
 
@@ -101,7 +122,7 @@ export function registerTools(server: McpServer): void {
     FinansiellDataZod.shape,
     async (args) => {
       const result = await nyckeltal.getNyckeltal(args);
-      return { content: [{ type: 'text' as const, text: result }] };
+      return createToolResponse(result);
     }
   );
 
@@ -112,7 +133,7 @@ export function registerTools(server: McpServer): void {
     FinansiellDataZod.shape,
     async (args) => {
       const result = await nyckeltal.getStyrelse(args);
-      return { content: [{ type: 'text' as const, text: result }] };
+      return createToolResponse(result);
     }
   );
 
@@ -123,7 +144,7 @@ export function registerTools(server: McpServer): void {
     FinansiellDataZod.shape,
     async (args) => {
       const result = await nyckeltal.listArsredovisningar(args);
-      return { content: [{ type: 'text' as const, text: result }] };
+      return createToolResponse(result);
     }
   );
 
@@ -134,7 +155,7 @@ export function registerTools(server: McpServer): void {
     FinansiellDataZod.shape,
     async (args) => {
       const result = await riskTrend.riskCheck(args);
-      return { content: [{ type: 'text' as const, text: result }] };
+      return createToolResponse(result);
     }
   );
 
@@ -145,7 +166,7 @@ export function registerTools(server: McpServer): void {
     TrendZod.shape,
     async (args) => {
       const result = await riskTrend.trendAnalysis(args);
-      return { content: [{ type: 'text' as const, text: result }] };
+      return createToolResponse(result);
     }
   );
 

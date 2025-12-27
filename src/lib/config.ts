@@ -9,9 +9,19 @@ import { join } from 'path';
 // API-konfiguration
 // =============================================================================
 
+// Hämta credentials från miljövariabler
+const CLIENT_ID = process.env.BOLAGSVERKET_CLIENT_ID;
+const CLIENT_SECRET = process.env.BOLAGSVERKET_CLIENT_SECRET;
+
+// Validera att credentials finns (krävs för produktion)
+if (!CLIENT_ID || !CLIENT_SECRET) {
+  console.error('[Config] VARNING: BOLAGSVERKET_CLIENT_ID och BOLAGSVERKET_CLIENT_SECRET måste sättas via miljövariabler.');
+  console.error('[Config] Servern kan inte ansluta till Bolagsverkets API utan giltiga credentials.');
+}
+
 export const API_CONFIG = {
-  CLIENT_ID: process.env.BOLAGSVERKET_CLIENT_ID || 'UIiATHgXGSP6HIyOlqWZkX51dnka',
-  CLIENT_SECRET: process.env.BOLAGSVERKET_CLIENT_SECRET || 'H10hBNr_KeYqA9h5AEe7J32HkFsa',
+  CLIENT_ID: CLIENT_ID || '',
+  CLIENT_SECRET: CLIENT_SECRET || '',
   TOKEN_URL: 'https://portal.api.bolagsverket.se/oauth2/token',
   BASE_URL: 'https://gw.api.bolagsverket.se/vardefulla-datamangder/v1',
   SCOPE: 'vardefulla-datamangder:read vardefulla-datamangder:ping',
@@ -55,9 +65,11 @@ export const CACHE_TTL = {
 // =============================================================================
 
 export const HTTP_CONFIG = {
-  TIMEOUT_MS: 30000,
+  TIMEOUT_MS: 15000,           // 15 sekunder (sänkt från 30s för bättre UX)
   MAX_RETRIES: 3,
   RETRY_DELAY_MS: 1000,
+  RATE_LIMIT_REQUESTS: 100,    // Max antal requests per fönster
+  RATE_LIMIT_WINDOW_MS: 60000, // Tidsfönster: 1 minut
 } as const;
 
 // =============================================================================
