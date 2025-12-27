@@ -81,7 +81,27 @@ function parseOrganisationResponse(data: OrganisationResponse, orgNummer: string
 
   // Organisationsform
   const orgFormData = org.organisationsform;
-  const orgFormKod = orgFormData?.organisationsform || '';
+  let orgFormKod = orgFormData?.organisationsform || '';
+
+  // Fallback: härleda organisationsform från företagsnamnet om koden saknas
+  if (!orgFormKod && namn) {
+    const namnUpper = namn.toUpperCase();
+    if (namnUpper.includes(' AB') || namnUpper.endsWith(' AB') || namnUpper.includes('AKTIEBOLAG')) {
+      orgFormKod = 'AB';
+    } else if (namnUpper.includes(' HB') || namnUpper.endsWith(' HB') || namnUpper.includes('HANDELSBOLAG')) {
+      orgFormKod = 'HB';
+    } else if (namnUpper.includes(' KB') || namnUpper.endsWith(' KB') || namnUpper.includes('KOMMANDITBOLAG')) {
+      orgFormKod = 'KB';
+    } else if (namnUpper.includes('EKONOMISK FÖRENING') || namnUpper.includes(' EK FÖR')) {
+      orgFormKod = 'EK';
+    } else if (namnUpper.includes('BOSTADSRÄTTSFÖRENING') || namnUpper.includes(' BRF')) {
+      orgFormKod = 'BRF';
+    }
+    if (orgFormKod) {
+      console.error(`[CompanyService] Härledde organisationsform ${orgFormKod} från företagsnamn`);
+    }
+  }
+
   const organisationsform = getOrganisationsformText(orgFormKod);
   const juridiskForm = orgFormData?.juridiskForm;
 

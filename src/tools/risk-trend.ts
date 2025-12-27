@@ -141,6 +141,15 @@ export async function riskCheck(args: unknown): Promise<string> {
     return lines.join('\n');
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Okänt fel';
+
+    // Konsekvent felkodshantering: samma rotorsak ger samma felkod
+    if (message.includes('Inga årsredovisningar') || message.includes('årsredovisning')) {
+      return handleError(ErrorCode.ANNUAL_REPORT_NOT_FOUND, message);
+    }
+    if (message.includes('hittades inte') || message.includes('404')) {
+      return handleError(ErrorCode.COMPANY_NOT_FOUND, message);
+    }
+
     return handleError(ErrorCode.API_ERROR, message);
   }
 }
@@ -280,6 +289,15 @@ export async function trendAnalysis(args: unknown): Promise<string> {
     return lines.join('\n');
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Okänt fel';
+
+    // Konsekvent felkodshantering: samma rotorsak ger samma felkod
+    if (message.includes('Inga årsredovisningar') || message.includes('årsredovisning')) {
+      return handleError(ErrorCode.ANNUAL_REPORT_NOT_FOUND, message);
+    }
+    if (message.includes('hittades inte') || message.includes('404')) {
+      return handleError(ErrorCode.COMPANY_NOT_FOUND, message);
+    }
+
     return handleError(ErrorCode.API_ERROR, message);
   }
 }
