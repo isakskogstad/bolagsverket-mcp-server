@@ -24,11 +24,7 @@
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://bolagsverket-mcp.onrender.com/mcp"
-    },
-    {
-      "type": "sse",
-      "url": "https://bolagsverket-mcp-ts.onrender.com/sse"
+      "url": "https://bolagsverket-mcp.onrender.com/"
     }
   ],
   "_meta": {
