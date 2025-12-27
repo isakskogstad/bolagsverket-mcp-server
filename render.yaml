@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: bolagsverket-mcp
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: node dist/server.js --sse
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: MCP_TRANSPORT
+        value: sse
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /health

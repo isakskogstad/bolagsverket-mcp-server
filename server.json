@@ -1,0 +1,43 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+  "name": "io.github.isakskogstad/bolagsverket",
+  "title": "Bolagsverket MCP Server",
+  "description": "MCP server f\u00f6r Bolagsverkets API - Svenska f\u00f6retagsdata och \u00e5rsredovisningar",
+  "websiteUrl": "https://github.com/isakskogstad/bolagsverket-mcp-server",
+  "repository": {
+    "url": "https://github.com/isakskogstad/bolagsverket-mcp-server",
+    "source": "github"
+  },
+  "version": "1.0.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@isakskogstad/bolagsverket-mcp-server",
+      "version": "1.0.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": []
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://bolagsverket-mcp.onrender.com/mcp"
+    },
+    {
+      "type": "sse",
+      "url": "https://bolagsverket-mcp-ts.onrender.com/sse"
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "tool": "mcp-publisher",
+      "version": "1.0.0",
+      "build_info": {
+        "timestamp": "2025-12-26T00:00:00Z"
+      }
+    }
+  }
+}

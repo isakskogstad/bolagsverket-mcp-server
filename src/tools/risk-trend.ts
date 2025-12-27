@@ -1,0 +1,285 @@
+/**
+ * Bolagsverket MCP Server - Risk Check Tool
+ * Analyserar röda flaggor och varningar.
+ */
+
+import { FinansiellDataInputSchema, TrendInputSchema, safeParseInput } from './schemas.js';
+import { fetchFullArsredovisning, fetchTrendData } from '../lib/arsredovisning-service.js';
+import { fetchCompanyInfo } from '../lib/company-service.js';
+import { handleError } from '../lib/errors.js';
+import { ErrorCode } from '../types/index.js';
+import { validateOrgNummer } from '../lib/validators.js';
+import { formatRodaFlaggor, exportToJson, formatAmount, calculateGrowth, formatGrowth } from '../lib/formatting.js';
+import type { RodFlagga } from '../types/index.js';
+
+export const RISK_TOOL_NAME = 'bolagsverket_risk_check';
+
+export const RISK_TOOL_DESCRIPTION = `Analyserar ett företag för röda flaggor och varningar.
+
+Kontrollerar:
+- Negativt eget kapital
+- Låg soliditet (<10%)
+- Förlust
+- Sjunkande omsättning
+- Negativ vinstmarginal
+- Pågående konkurs eller likvidation
+- Revisionsanmärkningar`;
+
+export const RISK_TOOL_SCHEMA = {
+  type: 'object',
+  properties: {
+    org_nummer: {
+      type: 'string',
+      description: 'Organisationsnummer',
+    },
+    index: {
+      type: 'number',
+      description: 'Index för årsredovisning (0 = senaste)',
+      default: 0,
+    },
+    response_format: {
+      type: 'string',
+      enum: ['text', 'json'],
+      default: 'text',
+    },
+  },
+  required: ['org_nummer'],
+};
+
+/**
+ * Utför riskanalys.
+ */
+export async function riskCheck(args: unknown): Promise<string> {
+  const parsed = safeParseInput(FinansiellDataInputSchema, args);
+  if (!parsed.success) {
+    return handleError(ErrorCode.INVALID_INPUT, parsed.error);
+  }
+
+  const { org_nummer, index, response_format } = parsed.data;
+
+  const validation = validateOrgNummer(org_nummer);
+  if (!validation.valid) {
+    return handleError(ErrorCode.INVALID_INPUT, validation.error || 'Ogiltigt organisationsnummer');
+  }
+
+  try {
+    // Hämta företagsinfo och årsredovisning
+    const [companyInfo, fullArsredovisning] = await Promise.all([
+      fetchCompanyInfo(validation.cleanNumber),
+      fetchFullArsredovisning(validation.cleanNumber, index),
+    ]);
+
+    // Lägg till företagsnivå-flaggor
+    const allFlaggor: RodFlagga[] = [...fullArsredovisning.roda_flaggor];
+
+    // Kontrollera pågående förfaranden
+    if (companyInfo.pagaende_konkurs) {
+      allFlaggor.unshift({
+        typ: 'PAGAENDE_KONKURS',
+        allvarlighet: 'kritisk',
+        beskrivning: `Företaget har pågående konkurs sedan ${companyInfo.pagaende_konkurs.datum}`,
+        rekommendation: 'Avråd från alla transaktioner med detta företag',
+      });
+    }
+
+    if (companyInfo.pagaende_likvidation) {
+      allFlaggor.unshift({
+        typ: 'PAGAENDE_LIKVIDATION',
+        allvarlighet: 'kritisk',
+        beskrivning: `Företaget är under likvidation sedan ${companyInfo.pagaende_likvidation.datum}`,
+        rekommendation: 'Verifiera om företaget kan fullgöra sina åtaganden',
+      });
+    }
+
+    if (companyInfo.status !== 'Aktiv') {
+      allFlaggor.unshift({
+        typ: 'EJ_AKTIVT',
+        allvarlighet: 'kritisk',
+        beskrivning: `Företaget är ${companyInfo.status.toLowerCase()}`,
+        varde: companyInfo.avregistreringsorsak,
+      });
+    }
+
+    if (response_format === 'json') {
+      return exportToJson({
+        org_nummer: companyInfo.org_nummer,
+        foretag_namn: companyInfo.namn,
+        antal_flaggor: allFlaggor.length,
+        kritiska: allFlaggor.filter(f => f.allvarlighet === 'kritisk').length,
+        varningar: allFlaggor.filter(f => f.allvarlighet === 'varning').length,
+        info: allFlaggor.filter(f => f.allvarlighet === 'info').length,
+        flaggor: allFlaggor,
+      });
+    }
+
+    const lines = [
+      `# Riskanalys för ${companyInfo.namn}`,
+      '',
+      `**Organisationsnummer:** ${companyInfo.org_nummer}`,
+      `**Räkenskapsår:** ${fullArsredovisning.rakenskapsar_slut}`,
+      '',
+    ];
+
+    if (allFlaggor.length === 0) {
+      lines.push('✅ **Inga röda flaggor identifierade.**');
+      lines.push('');
+      lines.push('Företaget visar inga uppenbara varningssignaler baserat på tillgänglig data.');
+    } else {
+      // Sammanfattning
+      const kritiska = allFlaggor.filter(f => f.allvarlighet === 'kritisk').length;
+      const varningar = allFlaggor.filter(f => f.allvarlighet === 'varning').length;
+      
+      lines.push('## Sammanfattning');
+      lines.push('');
+      lines.push(`- 🔴 Kritiska: ${kritiska}`);
+      lines.push(`- 🟡 Varningar: ${varningar}`);
+      lines.push('');
+      
+      lines.push(formatRodaFlaggor(allFlaggor));
+    }
+
+    return lines.join('\n');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Okänt fel';
+    return handleError(ErrorCode.API_ERROR, message);
+  }
+}
+
+// ============================================================================
+// Trend Tool
+// ============================================================================
+
+export const TREND_TOOL_NAME = 'bolagsverket_trend';
+
+export const TREND_TOOL_DESCRIPTION = `Analyserar ett företags finansiella trend över flera år.
+
+Visar:
+- Historisk utveckling av nyckeltal
+- Tillväxttakt per nyckeltal
+- Enkel prognos baserad på trend`;
+
+export const TREND_TOOL_SCHEMA = {
+  type: 'object',
+  properties: {
+    org_nummer: {
+      type: 'string',
+      description: 'Organisationsnummer',
+    },
+    antal_ar: {
+      type: 'number',
+      description: 'Antal år att analysera (2-10)',
+      default: 4,
+    },
+  },
+  required: ['org_nummer'],
+};
+
+/**
+ * Utför trendanalys.
+ */
+export async function trendAnalysis(args: unknown): Promise<string> {
+  const parsed = safeParseInput(TrendInputSchema, args);
+  if (!parsed.success) {
+    return handleError(ErrorCode.INVALID_INPUT, parsed.error);
+  }
+
+  const { org_nummer, antal_ar } = parsed.data;
+
+  const validation = validateOrgNummer(org_nummer);
+  if (!validation.valid) {
+    return handleError(ErrorCode.INVALID_INPUT, validation.error || 'Ogiltigt organisationsnummer');
+  }
+
+  try {
+    const [companyInfo, trendData] = await Promise.all([
+      fetchCompanyInfo(validation.cleanNumber),
+      fetchTrendData(validation.cleanNumber, antal_ar),
+    ]);
+
+    if (trendData.length < 2) {
+      return handleError(
+        ErrorCode.ANNUAL_REPORT_NOT_FOUND,
+        `Minst 2 årsredovisningar krävs för trendanalys. Hittade endast ${trendData.length}.`
+      );
+    }
+
+    // Bygg trendanalys-objekt
+    const perioder = trendData.map(d => d.period);
+    const serier: Record<string, (number | null)[]> = {
+      nettoomsattning: trendData.map(d => d.nyckeltal.nettoomsattning ?? null),
+      arets_resultat: trendData.map(d => d.nyckeltal.arets_resultat ?? null),
+      eget_kapital: trendData.map(d => d.nyckeltal.eget_kapital ?? null),
+      soliditet: trendData.map(d => d.nyckeltal.soliditet ?? null),
+      antal_anstallda: trendData.map(d => d.nyckeltal.antal_anstallda ?? null),
+    };
+
+    // Beräkna tillväxt (senaste vs näst senaste)
+    const tillvaxt: Record<string, number | null> = {};
+    for (const [key, values] of Object.entries(serier)) {
+      tillvaxt[key] = calculateGrowth(values[0], values[1]);
+    }
+
+    // Enkel prognos (linjär extrapolering)
+    const prognos: Record<string, number | null> = {};
+    for (const [key, values] of Object.entries(serier)) {
+      if (values[0] !== null && values[1] !== null && tillvaxt[key] !== null) {
+        prognos[key] = Math.round(values[0] * (1 + tillvaxt[key]! / 100));
+      } else {
+        prognos[key] = null;
+      }
+    }
+
+    const lines = [
+      `# Trendanalys för ${companyInfo.namn}`,
+      '',
+      `**Analyserade perioder:** ${trendData.length}`,
+      '',
+      '## Historisk utveckling',
+      '',
+      '| Nyckeltal | ' + perioder.join(' | ') + ' | Tillväxt |',
+      '|-----------|' + perioder.map(() => '------:').join('|') + '|-------:|',
+    ];
+
+    const labels: Record<string, string> = {
+      nettoomsattning: 'Omsättning',
+      arets_resultat: 'Resultat',
+      eget_kapital: 'Eget kapital',
+      soliditet: 'Soliditet',
+      antal_anstallda: 'Anställda',
+    };
+
+    for (const [key, values] of Object.entries(serier)) {
+      const label = labels[key] || key;
+      const formatted = values.map(v => {
+        if (v === null) return '-';
+        if (key === 'soliditet') return `${v.toFixed(1)}%`;
+        if (key === 'antal_anstallda') return String(v);
+        return formatAmount(v);
+      });
+      const growth = formatGrowth(tillvaxt[key]);
+      lines.push(`| ${label} | ${formatted.join(' | ')} | ${growth} |`);
+    }
+
+    lines.push('');
+    lines.push('## Prognos (enkel linjär)');
+    lines.push('');
+    lines.push('_Baserat på senaste årets tillväxttakt:_');
+    lines.push('');
+
+    for (const [key, value] of Object.entries(prognos)) {
+      if (value !== null) {
+        const label = labels[key] || key;
+        const formatted = key === 'soliditet' ? `${value.toFixed(1)}%` : formatAmount(value);
+        lines.push(`- **${label}:** ${formatted}`);
+      }
+    }
+
+    lines.push('');
+    lines.push('_Observera: Prognosen är en enkel extrapolering och tar inte hänsyn till branschfaktorer eller makroekonomi._');
+
+    return lines.join('\n');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Okänt fel';
+    return handleError(ErrorCode.API_ERROR, message);
+  }
+}

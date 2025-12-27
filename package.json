@@ -1,0 +1,48 @@
+{
+  "name": "bolagsverket-mcp",
+  "version": "5.5.0",
+  "description": "Bolagsverket MCP Server - Hämtar och analyserar företagsdata från Bolagsverkets API",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "bolagsverket-mcp": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "start:sse": "node dist/server.js --sse",
+    "dev": "npx tsx src/server.ts",
+    "dev:http": "npx tsx src/server.ts --http",
+    "dev:sse": "npx tsx src/server.ts --sse",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.0",
+    "zod": "^3.25.0",
+    "cheerio": "^1.0.0",
+    "exceljs": "^4.4.0",
+    "fflate": "^0.8.0",
+    "express": "^4.21.0",
+    "marked": "^15.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/express": "^5.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "bolagsverket",
+    "sweden",
+    "company-data",
+    "annual-reports",
+    "ixbrl"
+  ],
+  "author": "Isak Skogstad",
+  "license": "MIT"
+}

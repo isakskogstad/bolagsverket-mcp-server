@@ -1,0 +1,231 @@
+/**
+ * Bolagsverket MCP Server - Company Service
+ * Hämtar och strukturerar företagsinformation från API.
+ */
+
+import { fetchOrganisation } from './api-client.js';
+import { cacheManager } from './cache-manager.js';
+import { formatOrgNummer } from './validators.js';
+import { getAvregistreringsorsakText, getOrganisationsformText, getPagaendeForfarandeText } from './code-lists.js';
+import type { CompanyInfo, OrganisationResponse, DatakallaFel, OrganisationsNamn, SNIKod } from '../types/index.js';
+
+/**
+ * Hämta företagsinformation med caching.
+ */
+export async function fetchCompanyInfo(orgNummer: string): Promise<CompanyInfo> {
+  // Kolla cache först
+  const cached = cacheManager.get<CompanyInfo>('company_info', orgNummer);
+  if (cached) {
+    console.error(`[CompanyService] Cache-träff för ${orgNummer}`);
+    return cached;
+  }
+
+  console.error(`[CompanyService] Hämtar företagsinfo för ${orgNummer}`);
+  const data = await fetchOrganisation(orgNummer);
+  const companyInfo = parseOrganisationResponse(data, orgNummer);
+
+  // Spara i cache
+  cacheManager.set('company_info', orgNummer, companyInfo);
+
+  return companyInfo;
+}
+
+/**
+ * Parsa API-svar till CompanyInfo.
+ */
+function parseOrganisationResponse(data: OrganisationResponse, orgNummer: string): CompanyInfo {
+  const orgs = data.organisationer || [];
+  
+  if (orgs.length === 0) {
+    throw new Error(`Företaget ${orgNummer} hittades inte`);
+  }
+
+  if (orgs.length > 1) {
+    console.error(`[CompanyService] Identitetsbeteckning ${orgNummer} har ${orgs.length} registrerade organisationer`);
+  }
+
+  const org = orgs[0];
+  const datakallaFel: DatakallaFel[] = [];
+
+  // Hjälpfunktion för att kontrollera datakällfel
+  const checkFel = (dataObj: { fel?: { typ: string; felBeskrivning: string }; dataproducent?: string } | undefined, faltnamn: string) => {
+    if (dataObj?.fel) {
+      datakallaFel.push({
+        falt: faltnamn,
+        typ: dataObj.fel.typ || 'OKÄNT',
+        beskrivning: dataObj.fel.felBeskrivning || 'Okänt fel',
+        dataproducent: dataObj.dataproducent || 'Okänd',
+      });
+    }
+  };
+
+  // Kontrollera fel
+  checkFel(org.organisationsnamn, 'organisationsnamn');
+  checkFel(org.organisationsform, 'organisationsform');
+  checkFel(org.organisationsdatum, 'organisationsdatum');
+  checkFel(org.avregistreradOrganisation, 'avregistreradOrganisation');
+  checkFel(org.postadressOrganisation, 'postadressOrganisation');
+  checkFel(org.verksamhetsbeskrivning, 'verksamhetsbeskrivning');
+  checkFel(org.naringsgrenOrganisation, 'naringsgrenOrganisation');
+
+  // Extrahera namn
+  const namnData = org.organisationsnamn;
+  const namnLista = namnData?.organisationsnamnLista || [];
+  const namn = namnLista[0]?.namn || 'Okänt';
+
+  // Alla namn
+  const allaNamn: OrganisationsNamn[] = namnLista.map(n => ({
+    namn: n.namn,
+    typ: n.typ || 'FORETAGSNAMN',
+  }));
+
+  // Organisationsform
+  const orgFormData = org.organisationsform;
+  const orgFormKod = orgFormData?.organisationsform || '';
+  const organisationsform = getOrganisationsformText(orgFormKod);
+  const juridiskForm = orgFormData?.juridiskForm;
+
+  // Datum
+  const datumData = org.organisationsdatum;
+  const registreringsdatum = datumData?.registreringsdatum || '';
+
+  // Avregistrering
+  const avregData = org.avregistreradOrganisation;
+  const avregistreringsdatum = avregData?.avregistreringsdatum;
+  const avregistreringsorsakKod = avregData?.orsak;
+  const avregistreringsorsak = avregistreringsorsakKod 
+    ? getAvregistreringsorsakText(avregistreringsorsakKod) 
+    : undefined;
+
+  // Status
+  const status = avregistreringsdatum ? 'Avregistrerad' : 'Aktiv';
+
+  // Adress
+  const adressData = org.postadressOrganisation;
+  const adress = {
+    utdelningsadress: adressData?.utdelningsadress,
+    postnummer: adressData?.postnummer,
+    postort: adressData?.postort,
+  };
+
+  // Verksamhet
+  const verksamhet = org.verksamhetsbeskrivning?.beskrivning;
+
+  // SNI-koder
+  const sniData = org.naringsgrenOrganisation;
+  const sniKoder: SNIKod[] = (sniData?.naringsgrenLista || []).map(sni => ({
+    kod: sni.kod,
+    klartext: sni.beskrivning,
+  }));
+
+  // Säte
+  const sate = org.sateOrganisation?.lan;
+
+  // Pågående förfaranden
+  const forfarandeData = org.pagandeAvvecklingsEllerOmstruktureringsforfarande;
+  const forfarandeLista = forfarandeData?.forfarandeLista || [];
+
+  let pagaendeKonkurs: { datum: string; typ: string } | undefined;
+  let pagaendeLikvidation: { datum: string; typ: string } | undefined;
+
+  for (const f of forfarandeLista) {
+    const typText = getPagaendeForfarandeText(f.typ);
+    if (f.typ === 'KK') {
+      pagaendeKonkurs = { datum: f.datum || '', typ: typText };
+    } else if (f.typ === 'LI') {
+      pagaendeLikvidation = { datum: f.datum || '', typ: typText };
+    }
+  }
+
+  // Reklamsparr
+  const reklamsparr = org.organisationReklamsparr?.sparr;
+
+  // Verksam organisation
+  const verksamOrganisation = org.verksamOrganisation?.verksam;
+
+  return {
+    org_nummer: formatOrgNummer(orgNummer),
+    namn,
+    organisationsform,
+    organisationsform_kod: orgFormKod,
+    juridisk_form: juridiskForm,
+    registreringsdatum,
+    status,
+    avregistreringsdatum,
+    avregistreringsorsak,
+    adress,
+    verksamhet,
+    sni_koder: sniKoder,
+    sate,
+    pagaende_konkurs: pagaendeKonkurs,
+    pagaende_likvidation: pagaendeLikvidation,
+    reklamsparr,
+    verksam_organisation: verksamOrganisation,
+    alla_namn: allaNamn,
+    datakalla_fel: datakallaFel.length > 0 ? datakallaFel : undefined,
+  };
+}
+
+/**
+ * Kontrollera om företag är aktivt (inte avregistrerat).
+ */
+export function isActiveCompany(info: CompanyInfo): boolean {
+  return info.status === 'Aktiv' && !info.pagaende_konkurs && !info.pagaende_likvidation;
+}
+
+/**
+ * Formatera företagsinfo som text.
+ */
+export function formatCompanyInfoText(info: CompanyInfo): string {
+  const lines: string[] = [
+    `# ${info.namn}`,
+    '',
+    `**Organisationsnummer:** ${info.org_nummer}`,
+    `**Organisationsform:** ${info.organisationsform}`,
+  ];
+
+  if (info.juridisk_form) {
+    lines.push(`**Juridisk form:** ${info.juridisk_form}`);
+  }
+
+  lines.push(`**Registreringsdatum:** ${info.registreringsdatum}`);
+  lines.push(`**Status:** ${info.status}`);
+
+  if (info.avregistreringsdatum) {
+    lines.push(`**Avregistreringsdatum:** ${info.avregistreringsdatum.slice(0, 10)}`);
+    if (info.avregistreringsorsak) {
+      lines.push(`**Avregistreringsorsak:** ${info.avregistreringsorsak}`);
+    }
+  }
+
+  if (info.pagaende_konkurs) {
+    lines.push('', `**⚠️ PÅGÅENDE KONKURS** (${info.pagaende_konkurs.datum})`);
+  }
+
+  if (info.pagaende_likvidation) {
+    lines.push('', `**⚠️ PÅGÅENDE LIKVIDATION** (${info.pagaende_likvidation.datum})`);
+  }
+
+  if (info.adress.utdelningsadress) {
+    lines.push('', '## Adress');
+    lines.push(info.adress.utdelningsadress);
+    lines.push(`${info.adress.postnummer || ''} ${info.adress.postort || ''}`);
+  }
+
+  if (info.sate) {
+    lines.push(`**Säte:** ${info.sate}`);
+  }
+
+  if (info.verksamhet) {
+    lines.push('', '## Verksamhet', info.verksamhet);
+  }
+
+  if (info.sni_koder.length > 0) {
+    lines.push('', '## SNI-koder');
+    for (const sni of info.sni_koder) {
+      lines.push(`- **${sni.kod}**: ${sni.klartext}`);
+    }
+  }
+
+  return lines.join('\n');
+}
