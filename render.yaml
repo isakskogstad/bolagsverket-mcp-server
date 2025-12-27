@@ -3,7 +3,8 @@ services:
     name: bolagsverket-mcp
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build
+    region: frankfurt
+    buildCommand: npm ci --production=false && npm run build
     startCommand: node dist/server.js --http
     envVars:
       - key: PORT
@@ -12,4 +13,8 @@ services:
         value: http
       - key: NODE_ENV
         value: production
+      - key: LOG_LEVEL
+        value: info
     healthCheckPath: /health
+    numInstances: 1
+    autoDeploy: true
