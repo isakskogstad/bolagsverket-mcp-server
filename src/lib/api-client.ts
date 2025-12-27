@@ -6,6 +6,7 @@
 import { randomUUID } from 'crypto';
 import { API_CONFIG, HTTP_CONFIG } from './config.js';
 import { tokenManager } from './token-manager.js';
+import { apiRateLimiter } from './rate-limiter.js';
 import type { ApiError, OrganisationResponse, DokumentlistaResponse } from '../types/index.js';
 
 /**
@@ -23,6 +24,12 @@ export async function makeApiRequest<T>(
   endpoint: string,
   body?: Record<string, unknown>
 ): Promise<T> {
+  // Rate limiting check
+  if (!apiRateLimiter.check('bolagsverket-api')) {
+    const resetIn = Math.ceil(apiRateLimiter.resetIn('bolagsverket-api') / 1000);
+    throw new Error(`Rate limit överskriden. Försök igen om ${resetIn} sekunder.`);
+  }
+
   let lastError: Error | null = null;
 
   for (let attempt = 1; attempt <= HTTP_CONFIG.MAX_RETRIES; attempt++) {

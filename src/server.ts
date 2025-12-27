@@ -22,12 +22,16 @@ import { registerTools } from './tools/index.js';
 import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
 import { cacheManager } from './lib/cache-manager.js';
+import { rateLimiter, apiRateLimiter } from './lib/rate-limiter.js';
 
 const PORT = parseInt(process.env.PORT || '10000', 10);
 const MCP_PROTOCOL_VERSION = '2025-03-26';
 
 // Session timeout (30 minuter inaktivitet)
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
+
+// Max antal samtidiga sessioner (skydd mot minnesläckor)
+const MAX_SESSIONS = 1000;
 
 /**
  * Generera en vacker HTML-välkomstsida för webbläsarbesökare.
@@ -301,18 +305,39 @@ async function runHTTP(): Promise<void> {
   // Session cleanup timer - rensa inaktiva sessioner var 5:e minut
   const sessionCleanupInterval = setInterval(() => {
     const now = Date.now();
+    let cleanedHttp = 0;
+    let cleanedSse = 0;
+
+    // Rensa HTTP-sessioner
     for (const [id, session] of httpSessions.entries()) {
       if (now - session.lastActivity > SESSION_TIMEOUT_MS) {
-        console.error(`[MCP] Session timeout, closing: ${id}`);
         session.server.close().catch(() => {});
         httpSessions.delete(id);
+        cleanedHttp++;
       }
+    }
+
+    // Logga statistik
+    if (cleanedHttp > 0 || cleanedSse > 0) {
+      console.error(`[Sessions] Rensade ${cleanedHttp} HTTP och ${cleanedSse} SSE sessioner. Aktiva: HTTP=${httpSessions.size}, SSE=${sseSessions.size}`);
+    }
+
+    // Logga rate limiter statistik
+    const rlStats = rateLimiter.getStats();
+    const apiStats = apiRateLimiter.getStats();
+    if (rlStats.total_requests > 0 || apiStats.total_requests > 0) {
+      console.error(`[RateLimiter] Session: ${rlStats.total_keys} keys, ${rlStats.total_requests} reqs. API: ${apiStats.total_keys} keys, ${apiStats.total_requests} reqs`);
     }
   }, 5 * 60 * 1000);
 
-  // Rensa interval vid shutdown
-  process.on('SIGINT', () => clearInterval(sessionCleanupInterval));
-  process.on('SIGTERM', () => clearInterval(sessionCleanupInterval));
+  // Rensa interval och rate limiters vid shutdown
+  const cleanup = () => {
+    clearInterval(sessionCleanupInterval);
+    rateLimiter.close();
+    apiRateLimiter.close();
+  };
+  process.on('SIGINT', cleanup);
+  process.on('SIGTERM', cleanup);
 
   /**
    * Hantera MCP Streamable HTTP request
@@ -348,6 +373,21 @@ async function runHTTP(): Promise<void> {
 
           // Ny session vid initialize request
           if (!session && isInitializeRequest(jsonBody)) {
+            // Kontrollera max sessions för att förhindra minnesläckor
+            if (httpSessions.size >= MAX_SESSIONS) {
+              console.error(`[MCP] Max sessions reached (${MAX_SESSIONS}). Rejecting new session.`);
+              res.writeHead(503, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                jsonrpc: '2.0',
+                error: {
+                  code: -32603,
+                  message: 'Server overloaded. Maximum sessions reached. Please try again later.',
+                },
+                id: (jsonBody as { id?: unknown }).id ?? null,
+              }));
+              return;
+            }
+
             const transport = new StreamableHTTPServerTransport({
               sessionIdGenerator: () => randomUUID(),
               onsessioninitialized: (id) => {
