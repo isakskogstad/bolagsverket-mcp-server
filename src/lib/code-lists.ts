@@ -146,8 +146,32 @@ export function getAvregistreringsorsakText(kod: string): string {
   return AVREGISTRERINGSORSAK[kod] || kod;
 }
 
+/**
+ * Hämta text för organisationsformkod.
+ * Hanterar tom sträng, case-insensitive matchning och okända koder.
+ */
 export function getOrganisationsformText(kod: string): string {
-  return ORGANISATIONSFORM[kod] || kod;
+  // Hantera tom/undefined/null
+  if (!kod || kod.trim() === '') {
+    return 'Okänd organisationsform';
+  }
+
+  const normalizedKod = kod.trim().toUpperCase();
+
+  // Direkt matchning
+  if (ORGANISATIONSFORM[normalizedKod]) {
+    return ORGANISATIONSFORM[normalizedKod];
+  }
+
+  // Försök hitta case-insensitive
+  for (const [key, value] of Object.entries(ORGANISATIONSFORM)) {
+    if (key.toUpperCase() === normalizedKod) {
+      return value;
+    }
+  }
+
+  // Fallback: returnera koden om den finns, annars "Okänd"
+  return normalizedKod.length > 0 ? normalizedKod : 'Okänd organisationsform';
 }
 
 export function getPagaendeForfarandeText(kod: string): string {

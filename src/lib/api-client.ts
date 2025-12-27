@@ -9,77 +9,112 @@ import { tokenManager } from './token-manager.js';
 import type { ApiError, OrganisationResponse, DokumentlistaResponse } from '../types/index.js';
 
 /**
- * Gör autentiserat API-anrop till Bolagsverket.
+ * Sleep-funktion för retry-logik.
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Gör autentiserat API-anrop till Bolagsverket med retry-logik.
  */
 export async function makeApiRequest<T>(
   method: 'GET' | 'POST',
   endpoint: string,
   body?: Record<string, unknown>
 ): Promise<T> {
-  const token = await tokenManager.getToken();
-  const requestId = randomUUID();
+  let lastError: Error | null = null;
 
-  const headers: Record<string, string> = {
-    'Authorization': `Bearer ${token}`,
-    'X-Request-Id': requestId,
-    'Accept': 'application/json',
-  };
-
-  if (method === 'POST') {
-    headers['Content-Type'] = 'application/json';
-  }
-
-  const url = `${API_CONFIG.BASE_URL}${endpoint}`;
-  console.error(`[API] ${method} ${endpoint} (request_id: ${requestId})`);
-
-  const response = await fetch(url, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(HTTP_CONFIG.TIMEOUT_MS),
-  });
-
-  if (!response.ok) {
-    console.error(`[API] Fel: ${response.status}`);
-    
-    let errorMessage = `HTTP ${response.status}`;
-    
+  for (let attempt = 1; attempt <= HTTP_CONFIG.MAX_RETRIES; attempt++) {
     try {
-      const errorData: ApiError = await response.json();
-      const title = errorData.title || 'Error';
-      const detail = errorData.detail || errorMessage;
-      
-      switch (response.status) {
-        case 400:
-          errorMessage = `Ogiltig begäran: ${detail}`;
-          break;
-        case 401:
-          errorMessage = `Ej autentiserad: ${detail}`;
-          tokenManager.invalidate();
-          break;
-        case 403:
-          errorMessage = `Åtkomst nekad: ${detail}`;
-          break;
-        case 404:
-          errorMessage = `Ej funnen: ${detail}`;
-          break;
-        case 500:
-          errorMessage = `Serverfel hos Bolagsverket: ${detail}`;
-          break;
-        default:
-          errorMessage = `${title}: ${detail}`;
+      const token = await tokenManager.getToken();
+      const requestId = randomUUID();
+
+      const headers: Record<string, string> = {
+        'Authorization': `Bearer ${token}`,
+        'X-Request-Id': requestId,
+        'Accept': 'application/json',
+      };
+
+      if (method === 'POST') {
+        headers['Content-Type'] = 'application/json';
       }
-      
-      console.error(`[API] ApiError - requestId: ${requestId}, status: ${response.status}, title: ${title}`);
-    } catch {
-      const text = await response.text();
-      errorMessage = `HTTP ${response.status}: ${text.slice(0, 200)}`;
+
+      const url = `${API_CONFIG.BASE_URL}${endpoint}`;
+      console.error(`[API] ${method} ${endpoint} (request_id: ${requestId}, attempt: ${attempt}/${HTTP_CONFIG.MAX_RETRIES})`);
+
+      const response = await fetch(url, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(HTTP_CONFIG.TIMEOUT_MS),
+      });
+
+      if (!response.ok) {
+        console.error(`[API] Fel: ${response.status}`);
+
+        let errorMessage = `HTTP ${response.status}`;
+
+        try {
+          const errorData: ApiError = await response.json();
+          const title = errorData.title || 'Error';
+          const detail = errorData.detail || errorMessage;
+
+          switch (response.status) {
+            case 400:
+              errorMessage = `Ogiltig begäran: ${detail}`;
+              break;
+            case 401:
+              errorMessage = `Ej autentiserad: ${detail}`;
+              tokenManager.invalidate();
+              break;
+            case 403:
+              errorMessage = `Åtkomst nekad: ${detail}`;
+              break;
+            case 404:
+              errorMessage = `Företaget hittades inte: ${detail}`;
+              break;
+            case 500:
+              errorMessage = `Serverfel hos Bolagsverket: ${detail}`;
+              break;
+            default:
+              errorMessage = `${title}: ${detail}`;
+          }
+
+          console.error(`[API] ApiError - requestId: ${requestId}, status: ${response.status}, title: ${title}`);
+        } catch {
+          const text = await response.text();
+          errorMessage = `HTTP ${response.status}: ${text.slice(0, 200)}`;
+        }
+
+        throw new Error(errorMessage);
+      }
+
+      return response.json() as Promise<T>;
+
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      // Nätverksfel - försök igen
+      const isNetworkError = lastError.message.includes('fetch failed') ||
+                            lastError.message.includes('network') ||
+                            lastError.message.includes('ECONNREFUSED') ||
+                            lastError.message.includes('ETIMEDOUT') ||
+                            lastError.message.includes('timeout');
+
+      if (isNetworkError && attempt < HTTP_CONFIG.MAX_RETRIES) {
+        const delayMs = HTTP_CONFIG.RETRY_DELAY_MS * attempt;
+        console.error(`[API] Nätverksfel, försöker igen om ${delayMs}ms... (${lastError.message})`);
+        await sleep(delayMs);
+        continue;
+      }
+
+      // Övriga fel - kasta direkt
+      throw lastError;
     }
-    
-    throw new Error(errorMessage);
   }
 
-  return response.json() as Promise<T>;
+  throw lastError || new Error('API-anrop misslyckades efter alla försök');
 }
 
 /**
