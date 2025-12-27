@@ -3,7 +3,7 @@
  * Bolagsverket MCP Server
  * Hämtar och analyserar företagsdata från Bolagsverkets API.
  *
- * Version: 5.6.0
+ * Version: 5.7.0
  * Stödjer stdio, SSE och Streamable HTTP transport.
  * Kompatibel med Claude.ai, ChatGPT och Claude Desktop.
  */
@@ -22,6 +22,7 @@ import { registerPrompts } from './prompts/index.js';
 import { cacheManager } from './lib/cache-manager.js';
 
 const PORT = parseInt(process.env.PORT || '10000', 10);
+const MCP_PROTOCOL_VERSION = '2025-06-18';
 
 /**
  * Skapa och konfigurera MCP-server.
@@ -76,14 +77,124 @@ async function runHTTP(): Promise<void> {
   // SSE transporter per session (för bakåtkompatibilitet)
   const sseSessions = new Map<string, SSEServerTransport>();
 
+  /**
+   * Hantera MCP Streamable HTTP request
+   */
+  async function handleMcpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const sessionId = (req.headers['mcp-session-id'] as string | undefined);
+    let session = sessionId ? httpSessions.get(sessionId) : undefined;
+
+    // HEAD - Protocol discovery (krävs av Claude.ai)
+    if (req.method === 'HEAD') {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'MCP-Protocol-Version': MCP_PROTOCOL_VERSION,
+      });
+      res.end();
+      return;
+    }
+
+    // POST - JSON-RPC request
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => body += chunk);
+      req.on('end', async () => {
+        try {
+          const jsonBody = JSON.parse(body);
+
+          // Ny session vid initialize request
+          if (!session && isInitializeRequest(jsonBody)) {
+            const transport = new StreamableHTTPServerTransport({
+              sessionIdGenerator: () => randomUUID(),
+              onsessioninitialized: (id) => {
+                httpSessions.set(id, { transport, server });
+                console.error(`[MCP] Session initialized: ${id}`);
+              },
+            });
+
+            const server = createMcpServer();
+            await server.connect(transport);
+            session = { transport, server };
+          }
+
+          if (!session) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              error: {
+                code: -32600,
+                message: 'Bad Request: No valid session. Send initialize request first.',
+              },
+              id: null,
+            }));
+            return;
+          }
+
+          await session.transport.handleRequest(req, res, jsonBody);
+        } catch (error) {
+          console.error('[MCP] Error:', error);
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              error: {
+                code: -32603,
+                message: 'Internal server error',
+              },
+              id: null,
+            }));
+          }
+        }
+      });
+      return;
+    }
+
+    // GET - SSE stream för Streamable HTTP (om session finns)
+    if (req.method === 'GET') {
+      if (session) {
+        await session.transport.handleRequest(req, res);
+        return;
+      }
+      // Ingen session - returnera 405 (Claude tolkar detta som "POST-only server")
+      res.writeHead(405, {
+        'Content-Type': 'application/json',
+        'Allow': 'POST, HEAD, DELETE',
+      });
+      res.end(JSON.stringify({
+        error: 'Method Not Allowed',
+        message: 'Use POST for MCP requests. GET requires active session.',
+      }));
+      return;
+    }
+
+    // DELETE - Avsluta session
+    if (req.method === 'DELETE') {
+      if (session && sessionId) {
+        await session.server.close();
+        httpSessions.delete(sessionId);
+        console.error(`[MCP] Session closed: ${sessionId}`);
+      }
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    // Metod stöds ej
+    res.writeHead(405, {
+      'Content-Type': 'application/json',
+      'Allow': 'POST, GET, HEAD, DELETE',
+    });
+    res.end(JSON.stringify({ error: 'Method not allowed' }));
+  }
+
   const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url || '/', `http://localhost:${PORT}`);
 
     // CORS headers för både Claude.ai och ChatGPT
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, MCP-Protocol-Version, Mcp-Session-Id, mcp-session-id');
-    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, MCP-Protocol-Version, Mcp-Session-Id, mcp-session-id');
+    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, MCP-Protocol-Version');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -91,121 +202,49 @@ async function runHTTP(): Promise<void> {
       return;
     }
 
-    // Health check
-    if (url.pathname === '/' || url.pathname === '/health') {
+    // Health check endpoint
+    if (url.pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         status: 'ok',
         server: SERVER_CONFIG.NAME,
         version: SERVER_CONFIG.VERSION,
         transport: 'streamable-http',
+        protocolVersion: MCP_PROTOCOL_VERSION,
         endpoints: {
-          mcp: '/mcp',
-          sse: '/sse',
-          health: '/health'
+          mcp: '/',
+          health: '/health',
+          sse: '/sse'
         }
       }));
       return;
     }
 
     // ==========================================
-    // MCP Endpoint - Streamable HTTP (primär)
+    // Root path - MCP Endpoint (primär för Claude.ai)
     // ==========================================
-    if (url.pathname === '/mcp') {
-      const sessionId = (req.headers['mcp-session-id'] || req.headers['Mcp-Session-Id']) as string | undefined;
-      let session = sessionId ? httpSessions.get(sessionId) : undefined;
-
-      // POST /mcp - JSON-RPC request
-      if (req.method === 'POST') {
-        let body = '';
-        req.on('data', chunk => body += chunk);
-        req.on('end', async () => {
-          try {
-            const jsonBody = JSON.parse(body);
-
-            // Ny session vid initialize request
-            if (!session && isInitializeRequest(jsonBody)) {
-              const transport = new StreamableHTTPServerTransport({
-                sessionIdGenerator: () => randomUUID(),
-                onsessioninitialized: (id) => {
-                  httpSessions.set(id, { transport, server });
-                  console.error(`[MCP] Session initialized: ${id}`);
-                },
-              });
-
-              const server = createMcpServer();
-              await server.connect(transport);
-              session = { transport, server };
-            }
-
-            if (!session) {
-              res.writeHead(400, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({
-                jsonrpc: '2.0',
-                error: {
-                  code: -32600,
-                  message: 'Bad Request: No valid session. Send initialize request first.',
-                },
-                id: null,
-              }));
-              return;
-            }
-
-            await session.transport.handleRequest(req, res, jsonBody);
-          } catch (error) {
-            console.error('[MCP] Error:', error);
-            if (!res.headersSent) {
-              res.writeHead(500, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({
-                jsonrpc: '2.0',
-                error: {
-                  code: -32603,
-                  message: 'Internal server error',
-                },
-                id: null,
-              }));
-            }
-          }
-        });
-        return;
-      }
-
-      // GET /mcp - SSE stream för Streamable HTTP
-      if (req.method === 'GET') {
-        if (!session) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'No active session' }));
-          return;
-        }
-
-        await session.transport.handleRequest(req, res);
-        return;
-      }
-
-      // DELETE /mcp - Avsluta session
-      if (req.method === 'DELETE') {
-        if (session && sessionId) {
-          await session.server.close();
-          httpSessions.delete(sessionId);
-          console.error(`[MCP] Session closed: ${sessionId}`);
-        }
-        res.writeHead(204);
-        res.end();
-        return;
-      }
-
-      // Metod stöds ej
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+    if (url.pathname === '/') {
+      await handleMcpRequest(req, res);
       return;
     }
 
     // ==========================================
-    // SSE Endpoint (bakåtkompatibilitet)
+    // /mcp path - MCP Endpoint (för ChatGPT och bakåtkompatibilitet)
+    // ==========================================
+    if (url.pathname === '/mcp') {
+      await handleMcpRequest(req, res);
+      return;
+    }
+
+    // ==========================================
+    // SSE Endpoint (bakåtkompatibilitet för äldre klienter)
     // ==========================================
     if (url.pathname === '/sse') {
       if (req.method !== 'GET') {
-        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.writeHead(405, {
+          'Content-Type': 'application/json',
+          'Allow': 'GET',
+        });
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return;
       }
@@ -267,9 +306,11 @@ async function runHTTP(): Promise<void> {
 
   httpServer.listen(PORT, () => {
     console.error(`[Server] Lyssnar på http://0.0.0.0:${PORT}`);
-    console.error(`[Server] MCP endpoint (Streamable HTTP): http://0.0.0.0:${PORT}/mcp`);
+    console.error(`[Server] MCP endpoint (Streamable HTTP): http://0.0.0.0:${PORT}/`);
+    console.error(`[Server] MCP endpoint (alias): http://0.0.0.0:${PORT}/mcp`);
     console.error(`[Server] SSE endpoint (legacy): http://0.0.0.0:${PORT}/sse`);
     console.error(`[Server] Health check: http://0.0.0.0:${PORT}/health`);
+    console.error(`[Server] Protocol version: ${MCP_PROTOCOL_VERSION}`);
   });
 }
 
