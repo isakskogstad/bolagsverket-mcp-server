@@ -126,35 +126,61 @@ function parseOrganisationResponse(data: OrganisationResponse, orgNummer: string
   const besoksadressData = (org as any).besoksadressOrganisation;
   const kontaktadressData = (org as any).kontaktadressOrganisation;
 
-  // Försök med postadress först, sedan besöksadress, sedan kontaktadress
-  const primaryAdress = postadressData || besoksadressData || kontaktadressData;
+  // API:et kan returnera adressdata antingen:
+  // 1. Direkt på postadressOrganisation (äldre format)
+  // 2. Nested i postadressOrganisation.postadress (nyare format enligt swagger)
+  const nestedPostadress = postadressData?.postadress;
+  const nestedBesoksadress = besoksadressData?.besoksadress;
+  const nestedKontaktadress = kontaktadressData?.kontaktadress;
 
-  // Bygg adressobjekt med fallbacks
+  // Bygg adressobjekt med fallbacks - kontrollera både nested och direkt format
   const adress = {
-    utdelningsadress: postadressData?.utdelningsadress ||
+    utdelningsadress: nestedPostadress?.utdelningsadress ||
+                      postadressData?.utdelningsadress ||
+                      nestedBesoksadress?.utdelningsadress ||
                       besoksadressData?.utdelningsadress ||
+                      nestedKontaktadress?.utdelningsadress ||
                       kontaktadressData?.utdelningsadress ||
+                      nestedPostadress?.gatuadress ||
                       postadressData?.gatuadress ||
-                      besoksadressData?.gatuadress ||
-                      primaryAdress?.adress,
-    postnummer: postadressData?.postnummer ||
+                      nestedBesoksadress?.gatuadress ||
+                      besoksadressData?.gatuadress,
+    postnummer: nestedPostadress?.postnummer ||
+                postadressData?.postnummer ||
+                nestedBesoksadress?.postnummer ||
                 besoksadressData?.postnummer ||
+                nestedKontaktadress?.postnummer ||
                 kontaktadressData?.postnummer,
-    postort: postadressData?.postort ||
+    postort: nestedPostadress?.postort ||
+             postadressData?.postort ||
+             nestedBesoksadress?.postort ||
              besoksadressData?.postort ||
+             nestedKontaktadress?.postort ||
              kontaktadressData?.postort ||
+             nestedPostadress?.ort ||
              postadressData?.ort ||
+             nestedBesoksadress?.ort ||
              besoksadressData?.ort,
-    land: postadressData?.land || besoksadressData?.land || 'Sverige',
+    land: nestedPostadress?.land ||
+          postadressData?.land ||
+          nestedBesoksadress?.land ||
+          besoksadressData?.land ||
+          'Sverige',
+    co_adress: nestedPostadress?.coAdress ||
+               postadressData?.coAdress ||
+               nestedBesoksadress?.coAdress ||
+               besoksadressData?.coAdress,
   };
 
   // Logga om adress saknas för felsökning
   if (!adress.utdelningsadress && !adress.postnummer && !adress.postort) {
     console.error(`[CompanyService] Varning: Ingen adress hittades för ${orgNummer}. API-svar innehöll:`, {
       harPostadress: !!postadressData,
+      harNestedPostadress: !!nestedPostadress,
       harBesoksadress: !!besoksadressData,
       harKontaktadress: !!kontaktadressData,
       postadressFalt: postadressData ? Object.keys(postadressData) : [],
+      nestedPostadressFalt: nestedPostadress ? Object.keys(nestedPostadress) : [],
     });
   }
 

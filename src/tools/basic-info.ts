@@ -89,6 +89,7 @@ export async function getAddress(args: unknown): Promise<string> {
     const harUtdelningsadress = !!info.adress.utdelningsadress;
     const harPostnummer = !!info.adress.postnummer;
     const harPostort = !!info.adress.postort;
+    const harCoAdress = !!info.adress.co_adress;
     const harSate = !!info.sate;
 
     if (!harUtdelningsadress && !harPostnummer && !harPostort && !harSate) {
@@ -105,6 +106,11 @@ export async function getAddress(args: unknown): Promise<string> {
     }
 
     // Bygg adressblock
+    // Lägg till c/o-adress först om den finns
+    if (harCoAdress) {
+      lines.push(`c/o ${info.adress.co_adress}`);
+    }
+
     if (harUtdelningsadress) {
       lines.push(info.adress.utdelningsadress!);
     }

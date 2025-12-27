@@ -31,15 +31,13 @@ export function formatPercent(value: number | null | undefined): string {
 
 /**
  * Formatera nyckeltal som markdown-tabell.
+ * Hanterar gracefully fall där ingen eller delvis data finns.
  */
 export function formatNyckeltalTable(nyckeltal: Nyckeltal, titel?: string): string {
   const lines: string[] = [];
-  
+
   if (titel) lines.push(`## ${titel}`, '');
-  
-  lines.push('| Nyckeltal | Värde |');
-  lines.push('|-----------|------:|');
-  
+
   const data: Array<[string, number | null | undefined, string]> = [
     ['Nettoomsättning', nyckeltal.nettoomsattning, 'kr'],
     ['Resultat efter fin. poster', nyckeltal.resultat_efter_finansiella, 'kr'],
@@ -52,6 +50,24 @@ export function formatNyckeltalTable(nyckeltal: Nyckeltal, titel?: string): stri
     ['Antal anställda', nyckeltal.antal_anstallda, 'st'],
   ];
 
+  // Räkna hur många nyckeltal som har värden
+  const dataCount = data.filter(([, value]) => value != null).length;
+
+  // Om inga nyckeltal finns, visa ett informativt meddelande
+  if (dataCount === 0) {
+    lines.push('_Inga nyckeltal kunde extraheras från årsredovisningen._');
+    lines.push('');
+    lines.push('**Möjliga orsaker:**');
+    lines.push('- Dokumentet har ett format som inte stöds');
+    lines.push('- Årsredovisningen saknar standardiserade XBRL-taggar');
+    lines.push('- Äldre årsredovisning med annorlunda struktur');
+    return lines.join('\n');
+  }
+
+  // Lägg till tabell med tillgängliga nyckeltal
+  lines.push('| Nyckeltal | Värde |');
+  lines.push('|-----------|------:|');
+
   for (const [label, value, unit] of data) {
     if (value != null) {
       const formatted = unit === '%' ? `${value.toFixed(1)} %` :
@@ -59,6 +75,23 @@ export function formatNyckeltalTable(nyckeltal: Nyckeltal, titel?: string): stri
                        formatSEK(value);
       lines.push(`| ${label} | ${formatted} |`);
     }
+  }
+
+  // Lägg till varning om delvis data
+  const totalPossible = 6; // Grundnyckeltal (exkl. härledda)
+  const grundData = [
+    nyckeltal.nettoomsattning,
+    nyckeltal.resultat_efter_finansiella,
+    nyckeltal.arets_resultat,
+    nyckeltal.eget_kapital,
+    nyckeltal.balansomslutning,
+    nyckeltal.antal_anstallda,
+  ];
+  const grundCount = grundData.filter(v => v != null).length;
+
+  if (grundCount > 0 && grundCount < totalPossible) {
+    lines.push('');
+    lines.push(`_Notera: Endast ${grundCount} av ${totalPossible} grundnyckeltal kunde extraheras._`);
   }
 
   return lines.join('\n');
@@ -90,6 +123,7 @@ export function formatRodaFlaggor(flaggor: RodFlagga[]): string {
 
 /**
  * Formatera personlista.
+ * Hanterar gracefully fall där namn kan vara ofullständiga.
  */
 export function formatPersoner(personer: Person[], titel?: string): string {
   if (personer.length === 0) return '';
@@ -98,8 +132,20 @@ export function formatPersoner(personer: Person[], titel?: string): string {
   if (titel) lines.push(`## ${titel}`, '');
 
   for (const person of personer) {
-    const namn = `${person.fornamn} ${person.efternamn}`.trim();
-    lines.push(`- **${namn}** (${person.roll})`);
+    // Bygg namn med fallback för tomma delar
+    const fornamn = person.fornamn?.trim() || '';
+    const efternamn = person.efternamn?.trim() || '';
+    let namn = `${fornamn} ${efternamn}`.trim();
+
+    // Om namnet är tomt eller väldigt kort, markera det
+    if (!namn || namn.length < 2) {
+      namn = '_Namn ej tillgängligt_';
+    }
+
+    // Roll-hantering
+    const roll = person.roll?.trim() || 'Okänd roll';
+
+    lines.push(`- **${namn}** (${roll})`);
   }
 
   return lines.join('\n');

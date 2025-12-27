@@ -63,11 +63,61 @@ export async function riskCheck(args: unknown): Promise<string> {
   }
 
   try {
-    // Hämta företagsinfo och årsredovisning
-    const [companyInfo, fullArsredovisning] = await Promise.all([
-      fetchCompanyInfo(validation.cleanNumber),
-      fetchFullArsredovisning(validation.cleanNumber, index),
-    ]);
+    // Hämta företagsinfo först
+    const companyInfo = await fetchCompanyInfo(validation.cleanNumber);
+
+    // Försök hämta årsredovisning - graceful hantering om den saknas
+    let fullArsredovisning;
+    try {
+      fullArsredovisning = await fetchFullArsredovisning(validation.cleanNumber, index);
+    } catch (arError) {
+      const arMessage = arError instanceof Error ? arError.message : 'Okänt fel';
+
+      // Om årsredovisning saknas, returnera graceful svar istället för tekniskt fel
+      if (arMessage.includes('Inga årsredovisningar') || arMessage.includes('hittades inte')) {
+        if (response_format === 'json') {
+          return JSON.stringify({
+            isError: false,
+            org_nummer: companyInfo.org_nummer,
+            foretag_namn: companyInfo.namn,
+            risk_analysis_possible: false,
+            reason: 'MISSING_ANNUAL_REPORT',
+            message: 'Risk-analys ej möjlig - företaget har inte lämnat årsredovisning ännu.',
+            recommendation: 'Försök igen senare när årsredovisning är inlämnad.',
+            company_status: companyInfo.status,
+            pagaende_konkurs: companyInfo.pagaende_konkurs || null,
+            pagaende_likvidation: companyInfo.pagaende_likvidation || null,
+          }, null, 2);
+        }
+
+        const lines = [
+          `# Riskanalys för ${companyInfo.namn}`,
+          '',
+          `**Organisationsnummer:** ${companyInfo.org_nummer}`,
+          '',
+          '⚠️ **Risk-analys ej möjlig**',
+          '',
+          'Företaget har inte lämnat årsredovisning ännu, vilket krävs för att genomföra en fullständig riskanalys.',
+          '',
+          '**Grundläggande information:**',
+          `- Status: ${companyInfo.status}`,
+          `- Registreringsdatum: ${companyInfo.registreringsdatum}`,
+        ];
+
+        if (companyInfo.pagaende_konkurs) {
+          lines.push('', `🔴 **VARNING:** Pågående konkurs sedan ${companyInfo.pagaende_konkurs.datum}`);
+        }
+        if (companyInfo.pagaende_likvidation) {
+          lines.push('', `🟡 **VARNING:** Pågående likvidation sedan ${companyInfo.pagaende_likvidation.datum}`);
+        }
+
+        lines.push('', '_Försök igen senare när årsredovisning är inlämnad._');
+        return lines.join('\n');
+      }
+
+      // Andra fel - kasta vidare
+      throw arError;
+    }
 
     // Lägg till företagsnivå-flaggor
     const allFlaggor: RodFlagga[] = [...fullArsredovisning.roda_flaggor];
