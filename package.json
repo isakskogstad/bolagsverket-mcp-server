@@ -1,6 +1,6 @@
 {
   "name": "bolagsverket-mcp",
-  "version": "5.5.0",
+  "version": "5.6.0",
   "description": "Bolagsverket MCP Server - Hämtar och analyserar företagsdata från Bolagsverkets API",
   "type": "module",
   "main": "dist/server.js",
@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
+    "start:http": "node dist/server.js --http",
     "start:sse": "node dist/server.js --sse",
     "dev": "npx tsx src/server.ts",
     "dev:http": "npx tsx src/server.ts --http",
