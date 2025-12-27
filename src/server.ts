@@ -22,7 +22,10 @@ import { registerPrompts } from './prompts/index.js';
 import { cacheManager } from './lib/cache-manager.js';
 
 const PORT = parseInt(process.env.PORT || '10000', 10);
-const MCP_PROTOCOL_VERSION = '2025-06-18';
+const MCP_PROTOCOL_VERSION = '2025-11-05';
+
+// Session timeout (30 minuter inaktivitet)
+const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * Skapa och konfigurera MCP-server.
@@ -71,24 +74,52 @@ async function runHTTP(): Promise<void> {
     console.error(`[Cache] Rensade ${cleared} utgångna poster`);
   }
 
-  // Streamable HTTP sessions
-  const httpSessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
+  // Streamable HTTP sessions med timeout-hantering
+  interface HttpSession {
+    transport: StreamableHTTPServerTransport;
+    server: McpServer;
+    lastActivity: number;
+  }
+  const httpSessions = new Map<string, HttpSession>();
 
   // SSE transporter per session (för bakåtkompatibilitet)
   const sseSessions = new Map<string, SSEServerTransport>();
+
+  // Session cleanup timer - rensa inaktiva sessioner var 5:e minut
+  const sessionCleanupInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [id, session] of httpSessions.entries()) {
+      if (now - session.lastActivity > SESSION_TIMEOUT_MS) {
+        console.error(`[MCP] Session timeout, closing: ${id}`);
+        session.server.close().catch(() => {});
+        httpSessions.delete(id);
+      }
+    }
+  }, 5 * 60 * 1000);
+
+  // Rensa interval vid shutdown
+  process.on('SIGINT', () => clearInterval(sessionCleanupInterval));
+  process.on('SIGTERM', () => clearInterval(sessionCleanupInterval));
 
   /**
    * Hantera MCP Streamable HTTP request
    */
   async function handleMcpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // Session ID header (case-insensitive)
     const sessionId = (req.headers['mcp-session-id'] as string | undefined);
     let session = sessionId ? httpSessions.get(sessionId) : undefined;
 
+    // Uppdatera lastActivity för aktiv session
+    if (session) {
+      session.lastActivity = Date.now();
+    }
+
     // HEAD - Protocol discovery (krävs av Claude.ai)
+    // Specifikationen säger att servern ska returnera MCP-Protocol-Version header
     if (req.method === 'HEAD') {
       res.writeHead(200, {
-        'Content-Type': 'application/json',
         'MCP-Protocol-Version': MCP_PROTOCOL_VERSION,
+        'Accept': 'application/json, text/event-stream',
       });
       res.end();
       return;
@@ -107,14 +138,19 @@ async function runHTTP(): Promise<void> {
             const transport = new StreamableHTTPServerTransport({
               sessionIdGenerator: () => randomUUID(),
               onsessioninitialized: (id) => {
-                httpSessions.set(id, { transport, server });
+                const newSession: HttpSession = {
+                  transport,
+                  server,
+                  lastActivity: Date.now()
+                };
+                httpSessions.set(id, newSession);
                 console.error(`[MCP] Session initialized: ${id}`);
               },
             });
 
             const server = createMcpServer();
             await server.connect(transport);
-            session = { transport, server };
+            session = { transport, server, lastActivity: Date.now() };
           }
 
           if (!session) {
@@ -193,8 +229,9 @@ async function runHTTP(): Promise<void> {
     // CORS headers för både Claude.ai och ChatGPT
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, HEAD, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, MCP-Protocol-Version, Mcp-Session-Id, mcp-session-id');
-    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, MCP-Protocol-Version');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, MCP-Protocol-Version, Mcp-Session-Id, mcp-session-id, Last-Event-ID');
+    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, MCP-Protocol-Version, Content-Type');
+    res.setHeader('Access-Control-Max-Age', '86400'); // Cache preflight for 24 hours
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);

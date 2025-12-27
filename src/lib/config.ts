@@ -23,8 +23,8 @@ export const API_CONFIG = {
 
 export const SERVER_CONFIG = {
   NAME: 'bolagsverket',
-  VERSION: '5.3.0',
-  DEFAULT_PORT: parseInt(process.env.PORT || '8000', 10),
+  VERSION: '5.8.0',
+  DEFAULT_PORT: parseInt(process.env.PORT || '10000', 10),
   DEFAULT_HOST: '0.0.0.0',
 } as const;
 

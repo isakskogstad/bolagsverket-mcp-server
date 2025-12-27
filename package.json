@@ -1,6 +1,6 @@
 {
   "name": "bolagsverket-mcp",
-  "version": "5.7.0",
+  "version": "5.8.0",
   "description": "Bolagsverket MCP Server - Hämtar och analyserar företagsdata från Bolagsverkets API",
   "type": "module",
   "main": "dist/server.js",
@@ -19,7 +19,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.25.0",
+    "@modelcontextprotocol/sdk": "^1.25.1",
     "zod": "^3.25.0",
     "cheerio": "^1.0.0",
     "exceljs": "^4.4.0",
