@@ -5,9 +5,12 @@
 
 import { fetchDokumentlista, downloadDocumentBytes } from './api-client.js';
 import { cacheManager } from './cache-manager.js';
-import { IXBRLParser } from './ixbrl-parser.js';
+import { IXBRLParser, ParseWarning } from './ixbrl-parser.js';
 import { formatOrgNummer } from './validators.js';
 import type { Arsredovisning, FullArsredovisning, DokumentInfo, RodFlagga, FlerarsData } from '../types/index.js';
+
+// Re-export ParseWarning för bekvämlighet
+export type { ParseWarning } from './ixbrl-parser.js';
 
 // Vi behöver en ZIP-parser - använder pako för deflate
 import { unzipSync } from 'fflate';
@@ -184,14 +187,19 @@ export async function downloadAndExtractXhtml(dokumentId: string): Promise<strin
 }
 
 /**
- * Hämta och parsa årsredovisning.
+ * Hämta och parsa årsredovisning med parservarningar.
  */
 export async function fetchAndParseArsredovisning(
   orgNummer: string,
   index = 0
-): Promise<{ arsredovisning: Arsredovisning; xhtml: string; dokumentInfo: DokumentInfo }> {
+): Promise<{
+  arsredovisning: Arsredovisning;
+  xhtml: string;
+  dokumentInfo: DokumentInfo;
+  parseWarnings: ParseWarning[];
+}> {
   const dokument = await fetchDokumentlistaForOrg(orgNummer);
-  
+
   if (dokument.length === 0) {
     throw new Error(`Inga årsredovisningar hittades för ${orgNummer}`);
   }
@@ -209,6 +217,15 @@ export async function fetchAndParseArsredovisning(
   const balansrakning = parser.getBalansrakning('balans0');
   const resultatrakning = parser.getResultatrakning('period0');
 
+  // Hämta parservarningar
+  const parseWarnings = parser.getWarnings();
+
+  // Logga varningar för felsökning
+  if (parseWarnings.length > 0) {
+    console.error(`[ArsredovisningService] Parservarningar för ${orgNummer} (index ${index}):`,
+      parseWarnings.map(w => `${w.typ}: ${w.beskrivning}`).join('; '));
+  }
+
   const arsredovisning: Arsredovisning = {
     org_nummer: formatOrgNummer(orgNummer),
     foretag_namn: parser.getForetanamn() || 'Okänt företag',
@@ -225,7 +242,7 @@ export async function fetchAndParseArsredovisning(
     },
   };
 
-  return { arsredovisning, xhtml, dokumentInfo };
+  return { arsredovisning, xhtml, dokumentInfo, parseWarnings };
 }
 
 /**

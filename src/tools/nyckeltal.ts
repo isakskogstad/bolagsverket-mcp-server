@@ -49,7 +49,7 @@ export const TOOL_SCHEMA = {
 };
 
 /**
- * Hämta nyckeltal.
+ * Hämta nyckeltal med parservarningar.
  */
 export async function getNyckeltal(args: unknown): Promise<string> {
   const parsed = safeParseInput(FinansiellDataInputSchema, args);
@@ -65,10 +65,22 @@ export async function getNyckeltal(args: unknown): Promise<string> {
   }
 
   try {
-    const { arsredovisning } = await fetchAndParseArsredovisning(
+    const { arsredovisning, parseWarnings } = await fetchAndParseArsredovisning(
       validation.cleanNumber,
       index
     );
+
+    // Kontrollera om vi har tillräckligt med data
+    const nyckeltal = arsredovisning.nyckeltal;
+    const hasData = Object.values(nyckeltal).some(v => v !== null && v !== undefined);
+
+    if (!hasData) {
+      // Returnera strukturerat fel om ingen data kunde parsas
+      return handleError(ErrorCode.PARSE_ERROR,
+        'Kunde inte extrahera nyckeltal från årsredovisningen. Dokumentet kan ha annorlunda format.',
+        { index, parseWarnings }
+      );
+    }
 
     if (response_format === 'json') {
       return exportToJson({
@@ -79,6 +91,8 @@ export async function getNyckeltal(args: unknown): Promise<string> {
           slut: arsredovisning.rakenskapsar_slut,
         },
         nyckeltal: arsredovisning.nyckeltal,
+        // Inkludera varningar om det finns några (P1-E)
+        ...(parseWarnings && parseWarnings.length > 0 ? { parse_warnings: parseWarnings } : {}),
       });
     }
 
@@ -90,14 +104,23 @@ export async function getNyckeltal(args: unknown): Promise<string> {
       formatNyckeltalTable(arsredovisning.nyckeltal),
     ];
 
+    // Lägg till parservarningar i textformat
+    if (parseWarnings && parseWarnings.length > 0) {
+      lines.push('', '---', '');
+      lines.push('**⚠️ Parservarningar:**');
+      for (const warning of parseWarnings) {
+        lines.push(`- _${warning.beskrivning}_`);
+      }
+    }
+
     return lines.join('\n');
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Okänt fel';
-    
+
     if (message.includes('Inga årsredovisningar')) {
       return handleError(ErrorCode.ANNUAL_REPORT_NOT_FOUND, message);
     }
-    
+
     return handleError(ErrorCode.API_ERROR, message);
   }
 }
@@ -210,20 +233,46 @@ export async function listArsredovisningar(args: unknown): Promise<string> {
   try {
     const dokument = await fetchDokumentlistaForOrg(validation.cleanNumber);
 
-    if (dokument.length === 0) {
-      return `Inga årsredovisningar hittades för ${org_nummer}`;
-    }
-
+    // VIKTIGT: Alltid returnera strukturerat JSON-svar för response_format=json
+    // även när inga dokument finns (P1-D typstabilitet)
     if (response_format === 'json') {
-      // Exponera ett stabilt schema som matchar tidigare klientförväntningar
-      // (dokumentId/rapporteringsperiodTom/registreringstidpunkt).
       const out = dokument.map(d => ({
         dokumentId: d.dokumentId || d.id,
         filformat: d.filformat,
         rapporteringsperiodTom: d.rapporteringsperiodTom || d.rakenskapsperiod?.till,
         registreringstidpunkt: d.registreringstidpunkt || d.inlamningsdatum,
       }));
-      return exportToJson({ org_nummer, antal: out.length, dokument: out });
+
+      // Lägg till coverage-varning för stora bolag (P0-C)
+      let coverage_note: string | undefined;
+      if (dokument.length === 0) {
+        coverage_note = 'Inga årsredovisningar hittades. Stora börsnoterade bolag (t.ex. Ericsson, H&M, Spotify) lämnar in via annan kanal och finns ej i Bolagsverkets öppna API för digitala årsredovisningar.';
+      }
+
+      return exportToJson({
+        org_nummer: validation.cleanNumber,
+        antal: out.length,
+        dokument: out,
+        ...(coverage_note ? { coverage_note } : {}),
+      });
+    }
+
+    // Text-format
+    if (dokument.length === 0) {
+      const lines = [
+        `# Årsredovisningar för ${org_nummer}`,
+        '',
+        '**Inga årsredovisningar hittades.**',
+        '',
+        '## Möjliga orsaker:',
+        '- Stora börsnoterade bolag (t.ex. Ericsson, H&M, Spotify) lämnar in via annan kanal',
+        '- Företaget har inte lämnat in digital årsredovisning ännu',
+        '- Företaget använder ett filformat som inte indexeras i detta API',
+        '- Nyregistrerat företag som ännu ej haft sitt första bokslut',
+        '',
+        '_För stora bolag, sök istället på respektive bolags hemsida eller finansiella databaser som Bloomberg/Reuters._',
+      ];
+      return lines.join('\n');
     }
 
     const lines = [

@@ -1,6 +1,7 @@
 /**
  * Bolagsverket MCP Server - iXBRL Parser
  * Parsar iXBRL-dokument (inline XBRL) med Cheerio.
+ * Stödjer K2, K3 och K3K taxonomier.
  */
 
 import * as cheerio from 'cheerio';
@@ -21,44 +22,113 @@ import type {
 type CheerioAPI = cheerio.CheerioAPI;
 
 /**
+ * Alternativa namnmönster för iXBRL-element.
+ * Olika taxonomiversioner och dokumenttyper kan använda olika namngivning.
+ */
+const ELEMENT_ALIASES: Record<string, string[]> = {
+  // Resultat
+  'Nettoomsattning': ['Nettoomsattning', 'NettoOmsattning', 'Nettoomsättning', 'RorelseintakterNetto'],
+  'ResultatEfterFinansiellaPoster': ['ResultatEfterFinansiellaPoster', 'ResultatEfterFinansiellaIntakterKostnader', 'ResultatForeBokslutsdispositioner'],
+  'AretsResultat': ['AretsResultat', 'ÅretsResultat', 'Arsresultat', 'NetResultat', 'ResultatAretsResultat'],
+  'Rorelseresultat': ['Rorelseresultat', 'RörelseResultat', 'Rörelseresultat'],
+
+  // Balans
+  'EgetKapital': ['EgetKapital', 'SummaEgetKapital', 'EgetKapitalOchSkulder', 'TotalEgetKapital'],
+  'Tillgangar': ['Tillgangar', 'SummaTillgangar', 'Balansomslutning', 'TotalTillgangar'],
+
+  // Personal
+  'MedelantaletAnstallda': ['MedelantaletAnstallda', 'AntalAnstallda', 'GenomsnittligtAntalAnstallda', 'Medelantal'],
+};
+
+/**
+ * Interface för att spåra parservarningar.
+ */
+export interface ParseWarning {
+  typ: 'MISSING_DATA' | 'INCONSISTENT_DATA' | 'PARSE_ERROR' | 'TAXONOMY_MISMATCH';
+  falt: string;
+  beskrivning: string;
+  varde?: unknown;
+}
+
+/**
  * Parser för iXBRL-dokument från Bolagsverket.
  */
 export class IXBRLParser {
   private $: CheerioAPI;
+  private warnings: ParseWarning[] = [];
 
   constructor(xhtmlContent: string) {
     this.$ = cheerio.load(xhtmlContent, { xmlMode: true });
   }
 
   /**
-   * Hämta numeriskt värde från iXBRL-tagg.
+   * Hämta parservarningar.
+   */
+  getWarnings(): ParseWarning[] {
+    return [...this.warnings];
+  }
+
+  /**
+   * Lägg till en varning.
+   */
+  private addWarning(typ: ParseWarning['typ'], falt: string, beskrivning: string, varde?: unknown) {
+    this.warnings.push({ typ, falt, beskrivning, varde });
+  }
+
+  /**
+   * Hämta numeriskt värde från iXBRL-tagg med fallback till alternativa namn.
    */
   private getValue(namePattern: string, contextRef: string): number | null {
     const $ = this.$;
-    const selector = `ix\\:nonFraction[name*="${namePattern}"][contextRef="${contextRef}"], ` +
-                     `ix\\:nonfraction[name*="${namePattern}"][contextRef="${contextRef}"]`;
-    
-    const element = $(selector).first();
-    if (element.length === 0) return null;
 
-    let text = element.text().trim().replace(/\s/g, '').replace(',', '.');
-    
-    // Hantera sign-attribut
-    const sign = element.attr('sign');
-    if (sign === '-') text = `-${text.replace('-', '')}`;
+    // Hämta alla alternativa namn för detta mönster
+    const patterns = ELEMENT_ALIASES[namePattern] || [namePattern];
 
-    // Hantera format-attribut
-    const format = element.attr('format');
-    if (format?.includes('numdotdecimal')) {
-      text = text.replace(/\./g, '').replace(',', '.');
-    } else if (format?.includes('numcommadecimal')) {
-      text = text.replace(/,/g, '');
+    for (const pattern of patterns) {
+      // Bygg selector med både stor och liten bokstav för ix-namespace
+      const selector = `ix\\:nonFraction[name*="${pattern}"][contextRef="${contextRef}"], ` +
+                       `ix\\:nonfraction[name*="${pattern}"][contextRef="${contextRef}"], ` +
+                       `[name*="${pattern}"][contextRef="${contextRef}"]`;
+
+      const element = $(selector).first();
+      if (element.length === 0) continue;
+
+      let text = element.text().trim().replace(/\s/g, '');
+
+      // Hantera europeiskt decimalformat (1.234,56 -> 1234.56)
+      if (text.includes(',')) {
+        // Kontrollera om det är 1.234,56 format (punkter som tusentalsavgränsare)
+        if (text.match(/\d+\.\d+,\d+/)) {
+          text = text.replace(/\./g, '').replace(',', '.');
+        } else {
+          // Annars är det 1234,56 format
+          text = text.replace(',', '.');
+        }
+      }
+
+      // Hantera sign-attribut
+      const sign = element.attr('sign');
+      if (sign === '-') text = `-${text.replace('-', '')}`;
+
+      // Hantera format-attribut
+      const format = element.attr('format');
+      if (format?.includes('numdotdecimal')) {
+        // Format: 1,234.56 -> 1234.56
+        text = text.replace(/,/g, '');
+      } else if (format?.includes('numcommadecimal')) {
+        // Format: 1.234,56 -> 1234.56
+        text = text.replace(/\./g, '').replace(',', '.');
+      }
+
+      const scale = parseInt(element.attr('scale') || '0', 10);
+      const value = parseFloat(text);
+
+      if (!isNaN(value)) {
+        return Math.round(value * Math.pow(10, scale));
+      }
     }
 
-    const scale = parseInt(element.attr('scale') || '0', 10);
-    const value = parseFloat(text);
-    
-    return isNaN(value) ? null : Math.round(value * Math.pow(10, scale));
+    return null;
   }
 
   /**
@@ -76,31 +146,101 @@ export class IXBRLParser {
   }
 
   /**
-   * Hämta nyckeltal för angiven period.
+   * Hämta nyckeltal för angiven period med sanitetskontroller.
    */
   getNyckeltal(period = 'period0'): Nyckeltal {
     const balans = period === 'period0' ? 'balans0' : 'balans1';
-    
-    const nyckeltal: Nyckeltal = {
-      nettoomsattning: this.getValue('Nettoomsattning', period),
-      resultat_efter_finansiella: this.getValue('ResultatEfterFinansiellaPoster', period),
-      arets_resultat: this.getValue('AretsResultat', period),
-      eget_kapital: this.getValue('EgetKapital', balans),
-      balansomslutning: this.getValue('Tillgangar', balans),
-      antal_anstallda: this.getValue('MedelantaletAnstallda', period),
+
+    // Försök också med alternativa period-/balansnamn
+    const periodAlts = [period, `instant${period.slice(-1)}`, `duration${period.slice(-1)}`];
+    const balansAlts = [balans, `instant${balans.slice(-1)}`, `balance${balans.slice(-1)}`];
+
+    // Funktion för att hitta värde med fallback-perioder
+    const getValueWithFallback = (pattern: string, refs: string[]): number | null => {
+      for (const ref of refs) {
+        const val = this.getValue(pattern, ref);
+        if (val !== null) return val;
+      }
+      return null;
     };
 
-    if (nyckeltal.eget_kapital && nyckeltal.balansomslutning && nyckeltal.balansomslutning > 0) {
+    const nyckeltal: Nyckeltal = {
+      nettoomsattning: getValueWithFallback('Nettoomsattning', periodAlts),
+      resultat_efter_finansiella: getValueWithFallback('ResultatEfterFinansiellaPoster', periodAlts),
+      arets_resultat: getValueWithFallback('AretsResultat', periodAlts),
+      eget_kapital: getValueWithFallback('EgetKapital', balansAlts),
+      balansomslutning: getValueWithFallback('Tillgangar', balansAlts),
+      antal_anstallda: getValueWithFallback('MedelantaletAnstallda', periodAlts),
+    };
+
+    // Sanitetskontroller för finansiella data
+    this.validateFinancialConsistency(nyckeltal);
+
+    // Beräkna härledda nyckeltal
+    if (nyckeltal.eget_kapital != null && nyckeltal.balansomslutning && nyckeltal.balansomslutning > 0) {
       nyckeltal.soliditet = Math.round((nyckeltal.eget_kapital / nyckeltal.balansomslutning) * 1000) / 10;
     }
-    if (nyckeltal.nettoomsattning && nyckeltal.arets_resultat && nyckeltal.nettoomsattning > 0) {
+    if (nyckeltal.nettoomsattning && nyckeltal.arets_resultat != null && nyckeltal.nettoomsattning > 0) {
       nyckeltal.vinstmarginal = Math.round((nyckeltal.arets_resultat / nyckeltal.nettoomsattning) * 1000) / 10;
     }
-    if (nyckeltal.eget_kapital && nyckeltal.arets_resultat && nyckeltal.eget_kapital > 0) {
+    if (nyckeltal.eget_kapital && nyckeltal.eget_kapital > 0 && nyckeltal.arets_resultat != null) {
       nyckeltal.roe = Math.round((nyckeltal.arets_resultat / nyckeltal.eget_kapital) * 1000) / 10;
     }
 
+    // Kontrollera om vi fick tillräckligt med data
+    const fieldsWithData = Object.values(nyckeltal).filter(v => v !== null && v !== undefined).length;
+    if (fieldsWithData < 2) {
+      this.addWarning('MISSING_DATA', 'nyckeltal',
+        `Endast ${fieldsWithData} av 6 grundnyckeltal kunde extraheras. Dokumentet kan ha annorlunda struktur.`);
+    }
+
     return nyckeltal;
+  }
+
+  /**
+   * Validera att finansiella data är internt konsistenta.
+   */
+  private validateFinancialConsistency(nyckeltal: Nyckeltal): void {
+    const { resultat_efter_finansiella, arets_resultat, nettoomsattning, eget_kapital } = nyckeltal;
+
+    // Kontroll 1: Resultat efter finansiella vs årets resultat
+    // Normalt: årets resultat = resultat efter finansiella - skatt (+/- bokslutsdispositioner)
+    // Så om ena är positiv och andra är negativ (med stor differens) är något fel
+    if (resultat_efter_finansiella != null && arets_resultat != null) {
+      const rafSign = Math.sign(resultat_efter_finansiella);
+      const arSign = Math.sign(arets_resultat);
+
+      // Om tecknen skiljer sig åt (exkl. 0) och differensen är stor
+      if (rafSign !== 0 && arSign !== 0 && rafSign !== arSign) {
+        const diff = Math.abs(resultat_efter_finansiella - arets_resultat);
+        const maxAbs = Math.max(Math.abs(resultat_efter_finansiella), Math.abs(arets_resultat));
+
+        // Om differensen är mer än 200% av det största värdet
+        if (diff > maxAbs * 2) {
+          this.addWarning('INCONSISTENT_DATA', 'resultat',
+            `Resultat efter finansiella (${resultat_efter_finansiella}) och årets resultat (${arets_resultat}) har olika tecken med stor differens. Kontrollera data.`,
+            { resultat_efter_finansiella, arets_resultat });
+        }
+      }
+    }
+
+    // Kontroll 2: Negativt eget kapital med positiva resultat över tid
+    if (eget_kapital != null && eget_kapital < 0 && arets_resultat != null && arets_resultat > 0) {
+      // Detta kan vara korrekt men bör noteras
+      this.addWarning('INCONSISTENT_DATA', 'eget_kapital',
+        `Negativt eget kapital (${eget_kapital}) trots positivt årsresultat (${arets_resultat}). Kan indikera ansamlade förluster.`,
+        { eget_kapital, arets_resultat });
+    }
+
+    // Kontroll 3: Extrem vinstmarginal
+    if (nettoomsattning && nettoomsattning > 0 && arets_resultat != null) {
+      const vinstmarginal = (arets_resultat / nettoomsattning) * 100;
+      if (Math.abs(vinstmarginal) > 500) {
+        this.addWarning('INCONSISTENT_DATA', 'vinstmarginal',
+          `Extrem vinstmarginal (${vinstmarginal.toFixed(1)}%) indikerar möjligt parsningsfel.`,
+          { vinstmarginal, nettoomsattning, arets_resultat });
+      }
+    }
   }
 
   /**
@@ -333,7 +473,55 @@ export class IXBRLParser {
   }
 
   getForetanamn(): string | null {
-    return this.getTextValue('Foretagsnamn') || this.getTextValue('NamnPaHandelsbolagKommanditbolag') || this.getTextValue('NamnPaForetagetEllerForeningen');
+    // Prova flera olika mönster för företagsnamn
+    const patterns = [
+      'Foretagsnamn',
+      'Företagsnamn',
+      'ForetagsNamn',
+      'NamnPaHandelsbolagKommanditbolag',
+      'NamnPaForetagetEllerForeningen',
+      'OrganisationensNamn',
+      'Organisationsnamn',
+      'Foretag',
+      'Bolagsnamn',
+      'CompanyName',
+    ];
+
+    for (const pattern of patterns) {
+      const namn = this.getTextValue(pattern);
+      if (namn && namn.length > 1) {
+        return namn.trim();
+      }
+    }
+
+    // Försök hitta i title-element
+    const $ = this.$;
+    const titleNamn = $('title').first().text().trim();
+    if (titleNamn && titleNamn.length > 1 && !titleNamn.toLowerCase().includes('årsredovisning')) {
+      // Rensa bort vanliga suffix
+      const cleaned = titleNamn
+        .replace(/\s*[-–]\s*årsredovisning.*/i, '')
+        .replace(/\s*årsredovisning.*/i, '')
+        .trim();
+      if (cleaned.length > 1) {
+        return cleaned;
+      }
+    }
+
+    // Fallback: leta efter ix:nonNumeric med name som innehåller "namn" eller "name"
+    const namnElement = $('[name*="namn"], [name*="Namn"], [name*="name"], [name*="Name"]')
+      .filter((_, el) => {
+        const text = $(el).text().trim();
+        // Filtrera bort för korta eller för långa värden
+        return text.length > 2 && text.length < 100 && !text.match(/^\d+$/);
+      })
+      .first();
+
+    if (namnElement.length > 0) {
+      return namnElement.text().trim();
+    }
+
+    return null;
   }
 
   getFlerarsOversikt(): Record<string, Nyckeltal> {

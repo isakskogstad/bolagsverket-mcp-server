@@ -82,20 +82,54 @@ export async function getAddress(args: unknown): Promise<string> {
 
   try {
     const info = await fetchCompanyInfo(validation.cleanNumber);
-    
-    if (!info.adress.utdelningsadress) {
-      return 'Ingen adress registrerad för detta företag.';
+
+    const lines = [`# Adress för ${info.namn}`, ''];
+
+    // Kontrollera om vi har någon adressinformation alls
+    const harUtdelningsadress = !!info.adress.utdelningsadress;
+    const harPostnummer = !!info.adress.postnummer;
+    const harPostort = !!info.adress.postort;
+    const harSate = !!info.sate;
+
+    if (!harUtdelningsadress && !harPostnummer && !harPostort && !harSate) {
+      // Returnera strukturerat JSON-svar vid saknad adress
+      return JSON.stringify({
+        org_nummer: info.org_nummer,
+        foretag_namn: info.namn,
+        adress: null,
+        sate: null,
+        reason: 'NO_ADDRESS_DATA',
+        message: 'Ingen adressinformation finns registrerad för detta företag hos Bolagsverket.',
+        hint: 'Adressinformation kan saknas för myndigheter, vissa äldre registreringar, eller om företaget inte lämnat in adressuppgifter.'
+      }, null, 2);
     }
 
-    const lines = [
-      `# Adress för ${info.namn}`,
-      '',
-      info.adress.utdelningsadress,
-      `${info.adress.postnummer || ''} ${info.adress.postort || ''}`.trim(),
-    ];
+    // Bygg adressblock
+    if (harUtdelningsadress) {
+      lines.push(info.adress.utdelningsadress!);
+    }
 
-    if (info.sate) {
+    const postnrOrt = [info.adress.postnummer, info.adress.postort]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+
+    if (postnrOrt) {
+      lines.push(postnrOrt);
+    }
+
+    if (info.adress.land && info.adress.land !== 'Sverige') {
+      lines.push(info.adress.land);
+    }
+
+    // Lägg till säte om tillgängligt
+    if (harSate) {
       lines.push('', `**Säte:** ${info.sate}`);
+    }
+
+    // Om vi bara har säte men ingen annan adress, notera det
+    if (!harUtdelningsadress && !harPostnummer && !harPostort && harSate) {
+      lines.push('', '_Endast säte registrerat, ingen fullständig adress._');
     }
 
     return lines.join('\n');
