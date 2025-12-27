@@ -78,11 +78,73 @@ export async function analyzeFull(args: unknown): Promise<string> {
   }
 
   try {
-    // Hämta företagsinfo och årsredovisning parallellt
-    const [companyInfo, fullArsredovisning] = await Promise.all([
-      fetchCompanyInfo(validation.cleanNumber),
-      fetchFullArsredovisning(validation.cleanNumber, index),
-    ]);
+    // Hämta företagsinfo först
+    const companyInfo = await fetchCompanyInfo(validation.cleanNumber);
+
+    // Försök hämta årsredovisning - graceful hantering om den saknas
+    let fullArsredovisning;
+    try {
+      fullArsredovisning = await fetchFullArsredovisning(validation.cleanNumber, index);
+    } catch (arError) {
+      const arMessage = arError instanceof Error ? arError.message : 'Okänt fel';
+
+      // Om årsredovisning saknas, returnera grundläggande företagsinfo
+      if (arMessage.includes('Inga årsredovisningar') || arMessage.includes('hittades inte')) {
+        if (response_format === 'json') {
+          return exportToJson({
+            isError: false,
+            company_info: companyInfo,
+            arsredovisning: null,
+            analysis_complete: false,
+            reason: 'NO_ANNUAL_REPORT',
+            message: 'Fullständig analys ej möjlig - företaget har inte lämnat årsredovisning ännu.',
+            recommendation: 'Endast grundläggande företagsinformation tillgänglig.',
+          });
+        }
+
+        // Returnera grundläggande info i textformat
+        const lines = [
+          `# Företagsanalys: ${companyInfo.namn}`,
+          '',
+          `**Organisationsnummer:** ${companyInfo.org_nummer}`,
+          '',
+          '⚠️ **Begränsad analys** - Årsredovisning saknas',
+          '',
+          '## Grundläggande företagsinformation',
+          '',
+          `**Organisationsform:** ${companyInfo.organisationsform}`,
+          `**Registreringsdatum:** ${companyInfo.registreringsdatum}`,
+          `**Status:** ${companyInfo.status}`,
+        ];
+
+        if (companyInfo.adress.utdelningsadress) {
+          lines.push(`**Adress:** ${companyInfo.adress.utdelningsadress}, ${companyInfo.adress.postnummer || ''} ${companyInfo.adress.postort || ''}`);
+        }
+
+        if (companyInfo.verksamhet) {
+          lines.push(`**Verksamhet:** ${companyInfo.verksamhet}`);
+        }
+
+        if (companyInfo.pagaende_konkurs) {
+          lines.push('', `🔴 **VARNING:** Pågående konkurs sedan ${companyInfo.pagaende_konkurs.datum}`);
+        }
+        if (companyInfo.pagaende_likvidation) {
+          lines.push('', `🟡 **VARNING:** Pågående likvidation sedan ${companyInfo.pagaende_likvidation.datum}`);
+        }
+
+        lines.push(
+          '',
+          '---',
+          '',
+          '_Fullständig analys med nyckeltal, styrelse och röda flaggor kräver årsredovisning._',
+          '_Försök igen när företaget har lämnat in årsredovisning._'
+        );
+
+        return lines.join('\n');
+      }
+
+      throw arError;
+    }
 
     const result: AnalysisResult = {
       company_info: companyInfo,
@@ -91,9 +153,6 @@ export async function analyzeFull(args: unknown): Promise<string> {
 
     // Koncerndata om begärt och tillgängligt
     if (inkludera_koncern) {
-      // Kolla om det finns koncerndata i årsredovisningen
-      // Detta kräver att vi har iXBRL-dokumentet tillgängligt
-      // För nu returnerar vi en placeholder
       result.koncern_data = {
         har_koncernredovisning: false,
         meddelande: 'Koncernanalys kräver K3K-taxonomi',
@@ -107,14 +166,11 @@ export async function analyzeFull(args: unknown): Promise<string> {
     return formatAnalysisText(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Okänt fel';
-    
+
     if (message.includes('hittades inte') || message.includes('404')) {
       return handleError(ErrorCode.COMPANY_NOT_FOUND, `Företaget ${org_nummer} hittades inte`);
     }
-    if (message.includes('årsredovisning') || message.includes('dokument')) {
-      return handleError(ErrorCode.ANNUAL_REPORT_NOT_FOUND, message);
-    }
-    
+
     return handleError(ErrorCode.API_ERROR, message);
   }
 }

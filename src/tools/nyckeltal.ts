@@ -65,10 +65,45 @@ export async function getNyckeltal(args: unknown): Promise<string> {
   }
 
   try {
-    const { arsredovisning, parseWarnings } = await fetchAndParseArsredovisning(
-      validation.cleanNumber,
-      index
-    );
+    let arsredovisning;
+    let parseWarnings: any[] = [];
+
+    try {
+      const result = await fetchAndParseArsredovisning(validation.cleanNumber, index);
+      arsredovisning = result.arsredovisning;
+      parseWarnings = result.parseWarnings;
+    } catch (fetchError) {
+      const errorMessage = fetchError instanceof Error ? fetchError.message : 'Okänt fel';
+
+      // Graceful hantering om årsredovisning saknas
+      if (errorMessage.includes('Inga årsredovisningar')) {
+        if (response_format === 'json') {
+          return JSON.stringify({
+            isError: false,
+            org_nummer: validation.cleanNumber,
+            nyckeltal_available: false,
+            reason: 'NO_ANNUAL_REPORT',
+            message: 'Inga nyckeltal tillgängliga - företaget har inte lämnat årsredovisning ännu.',
+            recommendation: 'Nyregistrerade företag eller företag som inte lämnat in digital årsredovisning visas inte.',
+          }, null, 2);
+        }
+
+        return [
+          `# Nyckeltal för ${org_nummer}`,
+          '',
+          '**Inga nyckeltal tillgängliga**',
+          '',
+          'Företaget har inte lämnat årsredovisning ännu.',
+          '',
+          '**Möjliga orsaker:**',
+          '- Nyregistrerat företag som ännu inte haft bokslut',
+          '- Företaget lämnar inte in digital årsredovisning',
+          '- Stora börsbolag lämnar ofta in via annan kanal',
+        ].join('\n');
+      }
+
+      throw fetchError;
+    }
 
     // Kontrollera om vi har tillräckligt med data
     const nyckeltal = arsredovisning.nyckeltal;
@@ -146,12 +181,35 @@ export async function getStyrelse(args: unknown): Promise<string> {
   }
 
   try {
-    const { arsredovisning } = await fetchAndParseArsredovisning(validation.cleanNumber, index);
+    let arsredovisning;
+
+    try {
+      const result = await fetchAndParseArsredovisning(validation.cleanNumber, index);
+      arsredovisning = result.arsredovisning;
+    } catch (fetchError) {
+      const errorMessage = fetchError instanceof Error ? fetchError.message : 'Okänt fel';
+
+      // Graceful hantering om årsredovisning saknas
+      if (errorMessage.includes('Inga årsredovisningar')) {
+        return [
+          `# Styrelse och ledning för ${org_nummer}`,
+          '',
+          '**Information ej tillgänglig**',
+          '',
+          'Företaget har inte lämnat årsredovisning ännu, vilket krävs för att visa styrelseuppgifter.',
+          '',
+          '_För aktuell styrelseinfo, se Bolagsverkets register direkt._',
+        ].join('\n');
+      }
+
+      throw fetchError;
+    }
 
     const lines = [`# Styrelse och ledning för ${arsredovisning.foretag_namn}`, ''];
 
     if (arsredovisning.personer.length === 0) {
       lines.push('_Inga personer hittades i årsredovisningen._');
+      lines.push('', '_Detta kan bero på att dokumentet har annorlunda struktur eller att personuppgifter inte är inkluderade._');
       return lines.join('\n');
     }
 
@@ -174,7 +232,8 @@ export async function getStyrelse(args: unknown): Promise<string> {
     if (styrelse.length > 0) {
       lines.push('## Styrelse', '');
       for (const p of styrelse) {
-        lines.push(`- **${p.fornamn} ${p.efternamn}** (${p.roll})`);
+        const fullNamn = [p.fornamn, p.efternamn].filter(Boolean).join(' ').trim();
+        lines.push(`- **${fullNamn || 'Namn ej tillgängligt'}** (${p.roll})`);
       }
       lines.push('');
     }
@@ -182,7 +241,8 @@ export async function getStyrelse(args: unknown): Promise<string> {
     if (revisorer.length > 0) {
       lines.push('## Revisorer', '');
       for (const p of revisorer) {
-        lines.push(`- **${p.fornamn} ${p.efternamn}** (${p.roll})`);
+        const fullNamn = [p.fornamn, p.efternamn].filter(Boolean).join(' ').trim();
+        lines.push(`- **${fullNamn || 'Namn ej tillgängligt'}** (${p.roll})`);
       }
       lines.push('');
     }
@@ -190,7 +250,8 @@ export async function getStyrelse(args: unknown): Promise<string> {
     if (ovriga.length > 0) {
       lines.push('## Övriga', '');
       for (const p of ovriga) {
-        lines.push(`- **${p.fornamn} ${p.efternamn}** (${p.roll})`);
+        const fullNamn = [p.fornamn, p.efternamn].filter(Boolean).join(' ').trim();
+        lines.push(`- **${fullNamn || 'Namn ej tillgängligt'}** (${p.roll})`);
       }
     }
 
@@ -198,10 +259,6 @@ export async function getStyrelse(args: unknown): Promise<string> {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Okänt fel';
 
-    // Konsekvent felkodshantering: samma rotorsak ger samma felkod
-    if (message.includes('Inga årsredovisningar') || message.includes('årsredovisning')) {
-      return handleError(ErrorCode.ANNUAL_REPORT_NOT_FOUND, message);
-    }
     if (message.includes('hittades inte') || message.includes('404')) {
       return handleError(ErrorCode.COMPANY_NOT_FOUND, message);
     }
