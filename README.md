@@ -2,7 +2,26 @@
 
 MCP-server för att hämta och analysera företagsdata från Bolagsverkets API.
 
-## Installation
+## Remote MCP Server (Claude.ai / ChatGPT)
+
+Anslut till den hostade servern:
+
+```
+URL: https://bolagsverket-mcp-ts.onrender.com/mcp
+Transport: Streamable HTTP
+```
+
+### Ansluta via Claude.ai
+
+1. Gå till Claude.ai Settings → Integrations → Add MCP Server
+2. Ange URL: `https://bolagsverket-mcp-ts.onrender.com/mcp`
+3. Klicka "Connect"
+
+### Ansluta via ChatGPT
+
+Använd samma URL: `https://bolagsverket-mcp-ts.onrender.com/mcp`
+
+## Installation (lokal utveckling)
 
 ```bash
 npm install
@@ -26,18 +45,18 @@ Lägg till i `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
-### Remote MCP (claude.ai connector)
+### Remote MCP (Streamable HTTP)
 
-Starta servern med SSE-transport:
+Starta servern med HTTP-transport:
 
 ```bash
-npm run start:sse
+npm run start:http
 ```
 
 Eller med miljövariabel:
 
 ```bash
-MCP_TRANSPORT=sse npm start
+MCP_TRANSPORT=http npm start
 ```
 
 ### Deploy på Render
@@ -48,13 +67,13 @@ MCP_TRANSPORT=sse npm start
 
 Alternativt manuell konfiguration:
 - Build Command: `npm install && npm run build`
-- Start Command: `node dist/server.js --sse`
-- Environment: `PORT=10000`, `MCP_TRANSPORT=sse`
+- Start Command: `node dist/server.js --http`
+- Environment: `PORT=10000`, `MCP_TRANSPORT=http`
 
 Endpoints:
 - Health check: `https://your-app.onrender.com/health`
-- SSE: `https://your-app.onrender.com/sse`
-- MCP: `https://your-app.onrender.com/Mcp`
+- MCP (primär): `https://your-app.onrender.com/` eller `https://your-app.onrender.com/mcp`
+- SSE (legacy): `https://your-app.onrender.com/sse`
 
 ### Utveckling
 
