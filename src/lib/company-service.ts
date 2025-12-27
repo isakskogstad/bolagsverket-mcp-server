@@ -120,23 +120,67 @@ function parseOrganisationResponse(data: OrganisationResponse, orgNummer: string
   // Status
   const status = avregistreringsdatum ? 'Avregistrerad' : 'Aktiv';
 
-  // Adress
-  const adressData = org.postadressOrganisation;
+  // Adress - kontrollera flera möjliga adresskällor
+  // Använd any-types för att hantera potentiella fält som inte finns i typedefinitionen
+  const postadressData = org.postadressOrganisation as any;
+  const besoksadressData = (org as any).besoksadressOrganisation;
+  const kontaktadressData = (org as any).kontaktadressOrganisation;
+
+  // Försök med postadress först, sedan besöksadress, sedan kontaktadress
+  const primaryAdress = postadressData || besoksadressData || kontaktadressData;
+
+  // Bygg adressobjekt med fallbacks
   const adress = {
-    utdelningsadress: adressData?.utdelningsadress,
-    postnummer: adressData?.postnummer,
-    postort: adressData?.postort,
+    utdelningsadress: postadressData?.utdelningsadress ||
+                      besoksadressData?.utdelningsadress ||
+                      kontaktadressData?.utdelningsadress ||
+                      postadressData?.gatuadress ||
+                      besoksadressData?.gatuadress ||
+                      primaryAdress?.adress,
+    postnummer: postadressData?.postnummer ||
+                besoksadressData?.postnummer ||
+                kontaktadressData?.postnummer,
+    postort: postadressData?.postort ||
+             besoksadressData?.postort ||
+             kontaktadressData?.postort ||
+             postadressData?.ort ||
+             besoksadressData?.ort,
+    land: postadressData?.land || besoksadressData?.land || 'Sverige',
   };
+
+  // Logga om adress saknas för felsökning
+  if (!adress.utdelningsadress && !adress.postnummer && !adress.postort) {
+    console.error(`[CompanyService] Varning: Ingen adress hittades för ${orgNummer}. API-svar innehöll:`, {
+      harPostadress: !!postadressData,
+      harBesoksadress: !!besoksadressData,
+      harKontaktadress: !!kontaktadressData,
+      postadressFalt: postadressData ? Object.keys(postadressData) : [],
+    });
+  }
 
   // Verksamhet
   const verksamhet = org.verksamhetsbeskrivning?.beskrivning;
 
-  // SNI-koder
-  const sniData = org.naringsgrenOrganisation;
-  const sniKoder: SNIKod[] = (sniData?.naringsgrenLista || []).map(sni => ({
-    kod: sni.kod,
-    klartext: sni.beskrivning,
-  }));
+  // SNI-koder - prova flera möjliga fältnamn
+  const sniData = org.naringsgrenOrganisation ||
+                  (org as any).naringsgrenOrg ||
+                  (org as any).sniKoder;
+
+  const rawSniLista = sniData?.naringsgrenLista ||
+                      sniData?.sniLista ||
+                      (sniData as any)?.koder ||
+                      [];
+
+  const sniKoder: SNIKod[] = rawSniLista.map((sni: any) => ({
+    kod: sni.kod || sni.sniKod || sni.code || '',
+    klartext: sni.beskrivning || sni.klartext || sni.description || sni.namn || '',
+  })).filter((s: SNIKod) => s.kod);
+
+  // Logga om SNI-koder saknas för felsökning
+  if (sniKoder.length === 0 && sniData) {
+    console.error(`[CompanyService] Varning: SNI-data finns men inga koder extraherades för ${orgNummer}. Fält:`,
+      Object.keys(sniData));
+  }
 
   // Säte
   const sate = org.sateOrganisation?.lan;

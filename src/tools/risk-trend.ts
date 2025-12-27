@@ -228,11 +228,49 @@ export async function trendAnalysis(args: unknown): Promise<string> {
       tillvaxt[key] = calculateGrowth(values[0], values[1]);
     }
 
-    // Enkel prognos (linjär extrapolering)
+    // Prognos med guardrails för extremvärden (P2)
     const prognos: Record<string, number | null> = {};
+    const prognosVarningar: string[] = [];
+
     for (const [key, values] of Object.entries(serier)) {
       if (values[0] !== null && values[1] !== null && tillvaxt[key] !== null) {
-        prognos[key] = Math.round(values[0] * (1 + tillvaxt[key]! / 100));
+        const growth = tillvaxt[key]!;
+
+        // Guardrails för extrema prognoser
+        // 1. Soliditet: Ingen prognos om värdet är negativt eller nära 0
+        if (key === 'soliditet') {
+          if (values[0] <= 0 || values[1] <= 0) {
+            prognos[key] = null;
+            prognosVarningar.push('Soliditetsprognos ej möjlig pga negativt/noll basvärde');
+            continue;
+          }
+          // Begränsa soliditet till rimligt intervall (-100% till 100%)
+          const prognosVarde = values[0] * (1 + growth / 100);
+          if (Math.abs(prognosVarde) > 100) {
+            prognos[key] = null;
+            prognosVarningar.push(`Soliditetsprognos (${prognosVarde.toFixed(0)}%) utanför rimligt intervall`);
+            continue;
+          }
+        }
+
+        // 2. Begränsa tillväxt till max ±500% för att undvika extrema extrapoleringar
+        if (Math.abs(growth) > 500) {
+          prognos[key] = null;
+          prognosVarningar.push(`${key}: Tillväxten (${growth.toFixed(0)}%) är för extrem för prognos`);
+          continue;
+        }
+
+        // 3. Specialhantering för negativa -> positiva övergångar
+        const prognosVarde = values[0] * (1 + growth / 100);
+
+        // Om vi går från positivt till negativt eller tvärtom med stor magnitude, skippa
+        if (Math.sign(values[0]) !== Math.sign(prognosVarde) && Math.abs(prognosVarde) > Math.abs(values[0]) * 2) {
+          prognos[key] = null;
+          prognosVarningar.push(`${key}: Teckenändring med stor differens - prognos osäker`);
+          continue;
+        }
+
+        prognos[key] = Math.round(prognosVarde);
       } else {
         prognos[key] = null;
       }
@@ -280,6 +318,15 @@ export async function trendAnalysis(args: unknown): Promise<string> {
         const label = labels[key] || key;
         const formatted = key === 'soliditet' ? `${value.toFixed(1)}%` : formatAmount(value);
         lines.push(`- **${label}:** ${formatted}`);
+      }
+    }
+
+    // Lägg till prognosvarningar om det finns några
+    if (prognosVarningar.length > 0) {
+      lines.push('');
+      lines.push('**⚠️ Prognosvarningar:**');
+      for (const varning of prognosVarningar) {
+        lines.push(`- _${varning}_`);
       }
     }
 

@@ -72,6 +72,10 @@ export interface Adress {
   postnummer?: string;
   postort?: string;
   land?: string;
+  // Besöksadress-fält (om tillgängliga)
+  besoksadress?: string;
+  // C/O-adress
+  co_adress?: string;
 }
 
 export interface SNIKod {
